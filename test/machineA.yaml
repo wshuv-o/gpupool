@@ -1,0 +1,12 @@
+# Pretends to be the office workstation: runs the chat app AND an image tool.
+environments:
+  chatapp:
+    port: 11434
+    health: /api/tags
+  imagegen:
+    port: 9999
+    health: /healthz
+  wsapp:
+    port: 9998
+    health: /healthz
+maxConcurrency: 4

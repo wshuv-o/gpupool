@@ -1,0 +1,8 @@
+{
+  "port": 8787,
+  "agentTokens": ["at_replace_me_per_machine"],
+  "appKeys": {
+    "pk_replace_me": "chatapp"
+  },
+  "adminKey": "replace_me"
+}

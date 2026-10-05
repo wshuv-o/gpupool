@@ -1,0 +1,7 @@
+node_modules
+dist
+build
+test/machine*
+*.log
+broker.config.json
+.git

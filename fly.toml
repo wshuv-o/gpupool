@@ -1,0 +1,37 @@
+# fly launch --no-deploy, then: fly secrets set GPUPOOL_AGENT_TOKENS=... etc.
+app = "gpupool-broker"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  # The broker holds one long-lived WebSocket per GPU machine. Stopping the
+  # machine would drop every agent, so it must stay up.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 250
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/_health"
+
+[env]
+  PORT = "8787"
+  GPUPOOL_HEARTBEAT_MS = "10000"
+  GPUPOOL_STALE_MS = "30000"
+
+# One shared CPU is plenty: the broker only relays bytes, it never computes.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

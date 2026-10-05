@@ -1,0 +1,9 @@
+# Pretends to be a machine at home: only runs the chat app.
+environments:
+  chatapp:
+    port: 11434
+    health: /api/tags
+  imagegen:
+    port: 9999
+    health: /healthz
+maxConcurrency: 4

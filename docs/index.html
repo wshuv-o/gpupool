@@ -1,0 +1,742 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gpupool — use your own GPUs from the internet</title>
+<meta name="description" content="Expose a local port to the internet across several machines, with automatic failover when one is off.">
+<style>
+  :root {
+    --bg: #fbfbfa;
+    --panel: #ffffff;
+    --ink: #1a1a19;
+    --ink-soft: #5c5c57;
+    --ink-faint: #8a8a83;
+    --line: #e4e4e0;
+    --accent: #1f6feb;
+    --accent-soft: #e8f0fe;
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --warn-bg: #fff8e5;
+    --code-bg: #f4f4f1;
+    --radius: 10px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1115;
+      --panel: #161a21;
+      --ink: #e8e8e5;
+      --ink-soft: #a6aab3;
+      --ink-faint: #767b85;
+      --line: #262b34;
+      --accent: #6ea8fe;
+      --accent-soft: #16233a;
+      --ok: #4ac26b;
+      --warn: #d4a72c;
+      --warn-bg: #2a2313;
+      --code-bg: #1b2028;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.65 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  header {
+    padding: 72px 0 48px;
+    border-bottom: 1px solid var(--line);
+  }
+  h1 {
+    font-size: clamp(2rem, 5vw, 2.9rem);
+    line-height: 1.1;
+    margin: 0 0 14px;
+    letter-spacing: -0.02em;
+  }
+  .tagline { font-size: 1.2rem; color: var(--ink-soft); margin: 0 0 28px; max-width: 60ch; }
+  .badges { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .btn {
+    display: inline-block;
+    padding: 9px 18px;
+    border-radius: 7px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    border: 1px solid transparent;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { text-decoration: none; opacity: 0.9; }
+  .btn-ghost { border-color: var(--line); color: var(--ink); background: var(--panel); }
+  .btn-ghost:hover { text-decoration: none; border-color: var(--accent); }
+
+  h2 {
+    font-size: 1.5rem;
+    margin: 56px 0 8px;
+    letter-spacing: -0.01em;
+    scroll-margin-top: 20px;
+  }
+  h3 { font-size: 1.1rem; margin: 32px 0 6px; }
+  p { margin: 0 0 16px; }
+  .lede { color: var(--ink-soft); }
+
+  pre, code { font-family: var(--mono); }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    margin: 0 0 16px;
+  }
+  :not(pre) > code {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1px 5px;
+    font-size: 0.86em;
+  }
+
+  .diagram {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 18px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    line-height: 1.7;
+    white-space: pre;
+    color: var(--ink-soft);
+    margin: 0 0 16px;
+  }
+
+  table { width: 100%; border-collapse: collapse; margin: 0 0 16px; font-size: 0.92rem; display: block; overflow-x: auto; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--ink-soft); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  td code { white-space: nowrap; }
+
+  .steps { counter-reset: step; list-style: none; padding: 0; margin: 0; }
+  .steps > li {
+    counter-increment: step;
+    position: relative;
+    padding: 0 0 4px 46px;
+    margin-bottom: 28px;
+  }
+  .steps > li::before {
+    content: counter(step);
+    position: absolute; left: 0; top: 1px;
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 0.9rem;
+    display: grid; place-items: center;
+    font-family: var(--mono);
+  }
+  .steps h3 { margin: 2px 0 8px; }
+
+  .note {
+    background: var(--warn-bg);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--warn);
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 0 0 16px;
+    font-size: 0.93rem;
+  }
+  .note strong { color: var(--warn); }
+
+  /* ---------- demo ---------- */
+  .demo {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin: 0 0 16px;
+  }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-soft);
+    margin-bottom: 5px;
+  }
+  .field input {
+    width: 100%;
+    padding: 9px 11px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 0.86rem;
+  }
+  .field input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .field .hint { font-size: 0.78rem; color: var(--ink-faint); margin-top: 4px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 600px) { .row { grid-template-columns: 1fr; } }
+
+  .demo-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+  button {
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.92rem;
+    padding: 9px 18px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary { background: var(--panel); color: var(--ink); border-color: var(--line); }
+
+  #out {
+    margin-top: 16px;
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 14px 16px;
+    min-height: 68px;
+    font-family: var(--mono);
+    font-size: 0.84rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #out:empty::before { content: "Response will stream here."; color: var(--ink-faint); }
+  .status { font-size: 0.84rem; margin-top: 10px; font-family: var(--mono); }
+  .status.err { color: #cf222e; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .status.err { color: #ff7b72; } }
+  .status.ok { color: var(--ok); }
+  .status.wait { color: var(--ink-faint); }
+
+  footer {
+    margin-top: 72px;
+    padding: 28px 0 56px;
+    border-top: 1px solid var(--line);
+    color: var(--ink-faint);
+    font-size: 0.88rem;
+  }
+  .pill {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    padding: 2px 8px;
+    border-radius: 20px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+    vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>gpupool</h1>
+    <p class="tagline">
+      Expose a local port to the internet, across several machines, with automatic
+      failover when one of them is off. Your GPUs become capacity your deployed
+      app can use — whenever they happen to be on.
+    </p>
+    <div class="badges">
+      <a class="btn btn-primary" href="#download">Download the agent</a>
+      <a class="btn btn-ghost" href="https://github.com/wshuv-o/gpupool">Source on GitHub</a>
+      <a class="btn btn-ghost" href="#demo">Try the demo</a>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<h2 id="how">How it works</h2>
+<p class="lede">
+  Your GPU boxes can't be <em>found</em> — they sit behind NAT and get switched off.
+  So they don't wait to be reached. Each one dials <strong>out</strong> to a broker
+  and holds the connection open. "Find another computer" then stops being a search:
+  the broker already knows which machines are alive, because the dead ones stopped
+  checking in.
+</p>
+
+<div class="diagram">browser → your app on Vercel → broker (always on) → ┬→ office-3090   :11434
+                                                     ├→ home-4070     :11434
+                                                     └→ friend-4090   :11434</div>
+
+<p>
+  No port forwarding, no static IP, no router configuration. The GPU machine never
+  listens on a public port.
+</p>
+
+<table>
+  <tr><th>Part</th><th>Runs where</th><th>Job</th></tr>
+  <tr><td><strong>agent</strong></td><td>each GPU machine</td><td>dials out, health-checks your local app, proxies requests to it</td></tr>
+  <tr><td><strong>broker</strong></td><td>one always-on host</td><td>keeps the live registry, resolves app keys, relays streams</td></tr>
+  <tr><td><strong>your app</strong></td><td>anywhere</td><td>points at the broker and forgets the rest</td></tr>
+</table>
+
+<h2 id="download">Download</h2>
+<p>
+  A single self-contained executable — no Node install needed on the GPU machine.
+</p>
+<div class="badges">
+  <a class="btn btn-primary" href="https://github.com/wshuv-o/gpupool/releases/latest/download/gpupool.exe">gpupool.exe <span class="pill">Windows x64</span></a>
+  <a class="btn btn-ghost" href="https://github.com/wshuv-o/gpupool/releases/latest">All releases</a>
+</div>
+
+<div class="note" style="margin-top:16px">
+  <strong>Windows blocks unsigned binaries.</strong> Smart App Control / WDAC will
+  refuse this file with <em>"An Application Control policy has blocked this file."</em>
+  Code signing is not in place yet. Until it is, use the Node route instead, which
+  has no such restriction:
+  <pre style="margin:10px 0 0">npx gpupool --help</pre>
+</div>
+
+<h2 id="setup">Setting up a GPU machine</h2>
+
+<ol class="steps">
+  <li>
+    <h3>Run something on a local port</h3>
+    <p>Anything that speaks HTTP. gpupool neither knows nor cares what it is — Ollama,
+    vLLM, ComfyUI, a FastAPI service, your own code.</p>
+    <pre>ollama serve            # listens on 127.0.0.1:11434</pre>
+  </li>
+
+  <li>
+    <h3>Pair the machine, once</h3>
+    <p>The token comes from whoever runs the broker. Credentials are written to
+    <code>~/.gpupool/credentials.json</code> and reused from then on.</p>
+    <pre>gpupool login --broker https://your-broker.fly.dev \
+              --token at_REPLACE_WITH_YOUR_OWN \
+              --label office-3090</pre>
+  </li>
+
+  <li>
+    <h3>Say what to expose</h3>
+    <p>Create <code>gpupool.yaml</code> next to wherever you'll run the agent. The
+    <code>health</code> path is polled, so a crashed app drops out of the pool while
+    the machine stays in it.</p>
+    <pre>environments:
+  chatapp:
+    port: 11434
+    health: /api/tags
+
+maxConcurrency: 4</pre>
+    <p class="lede" style="font-size:0.92rem">
+      Omit <code>health</code> and the agent falls back to a TCP connect check, which
+      catches the app having exited but not the app being broken.
+    </p>
+  </li>
+
+  <li>
+    <h3>Install it as a service</h3>
+    <p>This is the step that matters. Without it the agent dies when you close the
+    terminal and never comes back after a reboot — so the machine only serves when
+    someone remembered to start it.</p>
+    <pre>gpupool service install              # starts at logon, no admin needed
+gpupool service install --system     # starts at boot, needs admin/root
+gpupool service install --dry-run    # print the definition, change nothing</pre>
+    <table>
+      <tr><th>Platform</th><th>Mechanism</th><th>Behaviour</th></tr>
+      <tr><td>Windows</td><td>Task Scheduler</td><td>restarts every minute on failure; keeps running on battery</td></tr>
+      <tr><td>Linux</td><td>systemd</td><td><code>Restart=always</code>, <code>RestartSec=5</code></td></tr>
+      <tr><td>macOS</td><td>launchd</td><td><code>KeepAlive</code>, <code>RunAtLoad</code></td></tr>
+    </table>
+    <p>On Linux, a <em>user</em> service still stops at logout unless you enable lingering:</p>
+    <pre>sudo loginctl enable-linger $USER</pre>
+  </li>
+
+  <li>
+    <h3>Check it joined</h3>
+    <pre>$ gpupool status --admin-key &lt;key&gt;
+office-3090  (0/4 busy)
+  chatapp  :11434  ready
+home-4070  (2/4 busy)
+  chatapp  :11434  ready
+  imagegen  :9999  DOWN - connect ECONNREFUSED 127.0.0.1:9999</pre>
+    <p>Health is per environment, not per machine — a crashed app is pulled while
+    everything else on that box keeps serving.</p>
+  </li>
+</ol>
+
+<h2 id="use">Using it from your app</h2>
+<p>
+  The broker is a transparent HTTP proxy, so whatever your local app speaks, your app
+  speaks. If it's Ollama, every OpenAI-compatible client works with a one-line change
+  and no SDK at all.
+</p>
+
+<pre>import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  baseURL: 'https://your-broker.fly.dev/v1',
+  apiKey: process.env.GPUPOOL_KEY,       // pk_chatapp_...
+});
+
+const stream = await openai.chat.completions.create({
+  model: 'gpt-oss-64k:latest',
+  messages: [{ role: 'user', content: 'hello' }],
+  stream: true,
+});</pre>
+
+<p>
+  Nothing in your app knows which machine answered, or that a machine went away
+  between two requests.
+</p>
+
+<h3>App keys isolate apps from each other</h3>
+<p>
+  Each key resolves to exactly one environment, and that binding is the only thing
+  deciding where a request lands. The <code>chatapp</code> key cannot reach
+  <code>imagegen</code>'s port down any path. Repointing or revoking an app means
+  editing the broker's key map — the app itself never changes.
+</p>
+
+<h3>WebSockets and sticky sessions</h3>
+<p>
+  WebSocket upgrades tunnel too, both directions, with binary frames and
+  server-initiated pushes intact — ComfyUI and notebook kernels report progress that
+  way. Browsers can't set headers on a WebSocket, so the key may travel as a query
+  parameter, which is stripped before the path reaches your app:
+</p>
+<pre>new WebSocket('wss://your-broker.fly.dev/ws?key=pk_wsapp_...');</pre>
+<p>
+  Send <code>x-gpupool-session</code> and the broker prefers the machine that served
+  that session last, so a warm cache or loaded model isn't thrown away. It's a
+  preference, not a pin: if that machine is gone the request goes elsewhere, because
+  falling back beats failing.
+</p>
+
+<h3>When nothing is available</h3>
+<p>You get an immediate <code>503</code> rather than a hang:</p>
+<pre>{ "error": { "message": "No machine available for environment \"chatapp\" right now. Try again later.",
+             "type": "no_capacity" } }</pre>
+<p>
+  Two variants, because they need different fixes. <em>"No machine available … try
+  again later"</em> means a machine declares this environment but none is ready — a
+  temporary condition. <em>"No machine is serving …"</em> means nothing in the pool
+  declares it at all — a config mistake.
+</p>
+
+<h2 id="demo">Live demo</h2>
+<p class="lede">
+  Point this at a running broker. It sends a streaming chat completion and renders
+  tokens as they arrive, so you can see the whole path working:
+  browser → broker → agent → your local model.
+</p>
+
+<div class="demo">
+  <div class="field">
+    <label for="broker">Broker URL</label>
+    <input id="broker" type="url" placeholder="https://your-broker.fly.dev" autocomplete="off" spellcheck="false">
+    <div class="hint">Base URL, no trailing <code>/v1</code>. Must be <code>https://</code> — see the note below.</div>
+  </div>
+  <div class="row">
+    <div class="field">
+      <label for="key">App key</label>
+      <input id="key" type="text" placeholder="pk_chatapp_..." autocomplete="off" spellcheck="false">
+      <div class="hint">Resolves to one environment.</div>
+    </div>
+    <div class="field">
+      <label for="model">Model</label>
+      <input id="model" type="text" placeholder="gpt-oss-64k:latest" autocomplete="off" spellcheck="false">
+      <div class="hint">Whatever your local server calls it.</div>
+    </div>
+  </div>
+  <div class="field">
+    <label for="prompt">Message</label>
+    <input id="prompt" type="text" value="In one sentence, what is a GPU?" autocomplete="off">
+  </div>
+  <div class="demo-actions">
+    <button id="send">Send</button>
+    <button id="check" class="secondary">Check pool health</button>
+    <span id="status" class="status"></span>
+  </div>
+  <div id="out"></div>
+</div>
+
+<div class="note">
+  <strong>This page is served over HTTPS</strong>, so a browser will refuse to call an
+  <code>http://</code> broker as mixed content. For the demo your broker needs TLS —
+  which you get for free on Fly, Railway, or behind Cloudflare. A
+  <code>http://localhost</code> broker is exempt from that rule in Chrome and Firefox,
+  so local testing works.
+</div>
+<div class="note">
+  <strong>The broker must allow this origin.</strong> It sends
+  <code>Access-Control-Allow-Origin: *</code> by default. If you've set an allowlist,
+  add <code>https://wshuv-o.github.io</code> to <code>GPUPOOL_CORS_ORIGIN</code>.
+</div>
+
+<h2 id="broker">Running the broker</h2>
+<p>
+  It's the only piece that needs hosting: a small stateful service that relays bytes
+  and never computes, so the smallest instance your platform sells is enough. A
+  <code>Dockerfile</code> and <code>fly.toml</code> are in the repo.
+</p>
+<p>
+  Tokens and app keys are opaque strings you generate yourself — there's no
+  registration step. Make them unguessable:
+</p>
+<pre>node -e "console.log('at_'+require('crypto').randomBytes(16).toString('hex'))"   # agent token
+node -e "console.log('pk_'+require('crypto').randomBytes(16).toString('hex'))"   # app key</pre>
+<pre>fly launch --no-deploy
+fly secrets set \
+  GPUPOOL_AGENT_TOKENS=at_REPLACE_WITH_YOUR_OWN,at_REPLACE_FOR_SECOND_MACHINE \
+  GPUPOOL_APP_KEYS='{"pk_chatapp_REPLACE_ME":"chatapp"}' \
+  GPUPOOL_ADMIN_KEY=pick_something_long
+fly deploy</pre>
+
+<div class="note">
+  <strong>It cannot be serverless.</strong> The broker holds one long-lived WebSocket
+  per GPU machine, so anything that sleeps or scales to zero will drop every agent at
+  once. The included <code>fly.toml</code> sets <code>auto_stop_machines = false</code>
+  for that reason. Vercel, Lambda and Cloudflare Workers are not suitable hosts;
+  Durable Objects would be.
+</div>
+
+<table>
+  <tr><th>Env var</th><th>Meaning</th></tr>
+  <tr><td><code>PORT</code></td><td>listen port (default 8787)</td></tr>
+  <tr><td><code>GPUPOOL_AGENT_TOKENS</code></td><td>comma-separated; one per machine</td></tr>
+  <tr><td><code>GPUPOOL_APP_KEYS</code></td><td>JSON object of app key → environment</td></tr>
+  <tr><td><code>GPUPOOL_ADMIN_KEY</code></td><td>guards <code>/_status</code></td></tr>
+  <tr><td><code>GPUPOOL_CORS_ORIGIN</code></td><td><code>*</code>, or a comma-separated allowlist</td></tr>
+  <tr><td><code>GPUPOOL_HEARTBEAT_MS</code></td><td>ping interval (default 10s)</td></tr>
+  <tr><td><code>GPUPOOL_STALE_MS</code></td><td>evict a silent agent after this (default 30s)</td></tr>
+  <tr><td><code>GPUPOOL_REQUEST_TIMEOUT_MS</code></td><td>per-request ceiling (default 10 min; <code>0</code> disables)</td></tr>
+  <tr><td><code>GPUPOOL_SESSION_HEADER</code></td><td>session id header (default <code>x-gpupool-session</code>)</td></tr>
+  <tr><td><code>GPUPOOL_SESSION_TTL_MS</code></td><td>how long affinity survives idleness (default 10 min)</td></tr>
+</table>
+
+<h2 id="failure">What happens when things break</h2>
+<table>
+  <tr><th>Situation</th><th>Result</th></tr>
+  <tr><td>Machine powers off</td><td>socket closes, out of the pool immediately; next request goes elsewhere</td></tr>
+  <tr><td>Machine freezes</td><td>no ping for <code>GPUPOOL_STALE_MS</code>, evicted</td></tr>
+  <tr><td>Local app crashes, machine fine</td><td>health check fails, that environment only is pulled</td></tr>
+  <tr><td>Machine dies mid-stream</td><td>client connection is cut — a partial response can't be retried</td></tr>
+  <tr><td>Client hangs up</td><td><code>cancel</code> reaches the local app, so an abandoned chat stops using the GPU</td></tr>
+  <tr><td>Nothing available</td><td>immediate <code>503</code></td></tr>
+  <tr><td>Machine wakes up</td><td>reconnects with backoff capped at 30s, rejoins on its own</td></tr>
+</table>
+
+<h2 id="limits">Current limits</h2>
+<p class="lede">Worth knowing before you build on it.</p>
+<ul>
+  <li>Agent tokens are issued by hand — there's no account system, and anyone holding one can join the pool and serve traffic. Treat them as trusted.</li>
+  <li>One broker, no multi-region, and its registry lives in memory.</li>
+  <li>Raw TCP isn't forwarded — HTTP and WebSocket only.</li>
+  <li>No metering or quotas.</li>
+  <li>The Windows binary is unsigned, so Smart App Control blocks it.</li>
+  <li>Consumer GPUs have modest VRAM, so a pool like this serves small and mid-size models well and large ones not at all.</li>
+</ul>
+
+<footer>
+  <div class="wrap" style="padding:0">
+    <a href="https://github.com/wshuv-o/gpupool">github.com/wshuv-o/gpupool</a>
+    &nbsp;·&nbsp; MIT
+  </div>
+</footer>
+
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const brokerEl = $('broker'), keyEl = $('key'), modelEl = $('model'), promptEl = $('prompt');
+  const sendBtn = $('send'), checkBtn = $('check'), statusEl = $('status'), outEl = $('out');
+
+  // Remember the endpoint between visits; it is per-browser and never leaves it.
+  const STORE = 'gpupool-demo';
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
+    brokerEl.value = saved.broker || '';
+    keyEl.value = saved.key || '';
+    modelEl.value = saved.model || '';
+  } catch { /* private window, or storage blocked */ }
+
+  function remember() {
+    try {
+      localStorage.setItem(STORE, JSON.stringify({
+        broker: brokerEl.value.trim(), key: keyEl.value.trim(), model: modelEl.value.trim(),
+      }));
+    } catch { /* ignore */ }
+  }
+
+  function setStatus(msg, kind) {
+    statusEl.textContent = msg;
+    statusEl.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function base() {
+    return brokerEl.value.trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+  }
+
+  /**
+   * A broker on http:// cannot be reached from this https:// page. Saying so
+   * plainly beats letting the browser report an opaque "Failed to fetch".
+   */
+  function mixedContentProblem(url) {
+    if (location.protocol !== 'https:') return null;
+    if (!/^http:\/\//i.test(url)) return null;
+    const host = url.replace(/^http:\/\//i, '').split('/')[0].split(':')[0];
+    if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return null;
+    return 'This page is HTTPS, so the browser blocks an http:// broker as mixed content. Give the broker TLS, or run this page locally.';
+  }
+
+  function validate() {
+    const url = base();
+    if (!url) return 'Enter the broker URL.';
+    if (!/^https?:\/\//i.test(url)) return 'Broker URL must start with http:// or https://';
+    const mixed = mixedContentProblem(url);
+    if (mixed) return mixed;
+    if (!keyEl.value.trim()) return 'Enter an app key.';
+    return null;
+  }
+
+  /** Turn a failed fetch into something actionable rather than "Failed to fetch". */
+  function explain(err, url) {
+    const msg = String(err && err.message || err);
+    if (/Failed to fetch|NetworkError|load failed/i.test(msg)) {
+      return `Could not reach ${url}. Either it is not running, or it did not allow this origin (CORS). Check the browser console for the specific reason.`;
+    }
+    return msg;
+  }
+
+  checkBtn.addEventListener('click', async () => {
+    const url = base();
+    if (!url) { setStatus('Enter the broker URL.', 'err'); return; }
+    const mixed = mixedContentProblem(url);
+    if (mixed) { setStatus(mixed, 'err'); return; }
+    remember();
+    setStatus('checking…', 'wait');
+    outEl.textContent = '';
+    try {
+      const res = await fetch(url + '/_health');
+      if (!res.ok) throw new Error(`broker replied ${res.status}`);
+      setStatus('broker is up', 'ok');
+      outEl.textContent =
+        'Broker reachable.\n\n' +
+        'This only proves the broker is alive — not that a GPU machine is connected.\n' +
+        'Pool membership is behind /_status, which needs the admin key:\n\n' +
+        `  curl ${url}/_status -H "Authorization: Bearer <admin-key>"`;
+    } catch (err) {
+      setStatus('unreachable', 'err');
+      outEl.textContent = explain(err, url);
+    }
+  });
+
+  sendBtn.addEventListener('click', async () => {
+    const problem = validate();
+    if (problem) { setStatus(problem, 'err'); return; }
+    remember();
+
+    const url = base();
+    const model = modelEl.value.trim() || 'gpt-oss-64k:latest';
+    sendBtn.disabled = true;
+    outEl.textContent = '';
+    setStatus('connecting…', 'wait');
+
+    const started = performance.now();
+    let firstToken = null;
+
+    try {
+      const res = await fetch(url + '/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer ' + keyEl.value.trim(),
+          // Keeps a conversation on one machine, so a warm cache is reused.
+          'x-gpupool-session': 'demo-page',
+        },
+        body: JSON.stringify({
+          model,
+          stream: true,
+          messages: [{ role: 'user', content: promptEl.value }],
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        let detail = text;
+        try { detail = JSON.parse(text).error?.message || text; } catch { /* not JSON */ }
+        // 503 is the expected answer when every machine is off, not a bug.
+        setStatus(res.status === 503 ? 'no machine available' : `HTTP ${res.status}`, 'err');
+        outEl.textContent = detail;
+        return;
+      }
+
+      setStatus('streaming…', 'wait');
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let text = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE frames are newline-delimited; a chunk can split one in half, so
+        // keep the trailing partial line in the buffer.
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const payload = trimmed.slice(5).trim();
+          if (payload === '[DONE]') continue;
+          try {
+            const delta = JSON.parse(payload).choices?.[0]?.delta ?? {};
+            // Some models emit reasoning tokens before any content.
+            const piece = delta.content || '';
+            if (piece) {
+              if (firstToken === null) firstToken = performance.now() - started;
+              text += piece;
+              outEl.textContent = text;
+            }
+          } catch { /* partial or non-JSON frame */ }
+        }
+      }
+
+      const total = Math.round(performance.now() - started);
+      if (!text) {
+        outEl.textContent =
+          'The stream completed but carried no content tokens.\n\n' +
+          'Some models (gpt-oss, for one) emit reasoning tokens first and need a\n' +
+          'longer budget before visible output appears.';
+        setStatus(`done in ${total} ms, no content`, 'err');
+      } else {
+        const ttft = firstToken === null ? '?' : Math.round(firstToken);
+        setStatus(`done — first token ${ttft} ms, total ${total} ms`, 'ok');
+      }
+    } catch (err) {
+      setStatus('request failed', 'err');
+      outEl.textContent = explain(err, url);
+    } finally {
+      sendBtn.disabled = false;
+    }
+  });
+
+  promptEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendBtn.click(); });
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,37 @@
+{
+  "name": "gpupool",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "broker": "node dist/broker/index.js",
+    "agent": "node dist/agent/index.js",
+    "binary": "node scripts/build-binary.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node test/run-all.mjs"
+  },
+  "bin": {
+    "gpupool": "./dist/agent/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6",
+    "typescript": "^5.7.2"
+  },
+  "license": "MIT",
+  "description": "Expose a local port to the internet across several machines, with automatic failover when one is off.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wshuv-o/gpupool.git"
+  },
+  "homepage": "https://wshuv-o.github.io/gpupool/"
+}
