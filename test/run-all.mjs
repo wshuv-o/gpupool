@@ -160,6 +160,22 @@ try {
     !crossed.includes('"app":"imagegen"'),
   );
 
+  // 3b. browser headers --------------------------------------------------
+  // A forwarded Origin makes Ollama answer 403, so every browser-originated
+  // request fails. Assert the local app never sees it.
+  const seen = await fetch('http://127.0.0.1:8787/headers', {
+    headers: {
+      authorization: 'Bearer pk_imagegen_8d3b7e55',
+      origin: 'https://example.github.io',
+      referer: 'https://example.github.io/',
+      'sec-fetch-mode': 'cors',
+    },
+  }).then((r) => r.json());
+  record(
+    'browser Origin is not forwarded to the local app',
+    !('origin' in seen) && !('referer' in seen) && !('sec-fetch-mode' in seen),
+  );
+
   // 4. streaming -------------------------------------------------------
   // Deterministic source, so this measures the tunnel and not model health.
   record('SSE streams rather than buffers', await runScript('test/sse-test.mjs'));

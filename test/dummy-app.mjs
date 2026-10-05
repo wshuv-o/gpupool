@@ -31,6 +31,15 @@ createServer((req, res) => {
     return;
   }
 
+  // Lets a test assert which headers actually reached the local app. Ollama,
+  // Jupyter and ComfyUI all reject requests carrying a foreign Origin, so the
+  // agent must strip it.
+  if (url.pathname === '/headers') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(req.headers));
+    return;
+  }
+
   if (url.pathname === '/healthz') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{"ok":true}');

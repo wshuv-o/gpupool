@@ -40,6 +40,33 @@ function log(...args: unknown[]): void {
   console.log(new Date().toISOString(), ...args);
 }
 
+/**
+ * Headers to present to the local app.
+ *
+ * `Origin` must not be forwarded. Local AI servers police it themselves —
+ * Ollama answers 403 for an origin outside OLLAMA_ORIGINS, and Jupyter and
+ * ComfyUI do the same — so passing a browser's origin through makes every
+ * browser-originated request fail. The broker already owns CORS for the public
+ * side and overrides whatever the app sets, so from the app's point of view
+ * this is a same-origin server-side call, which is what it actually is.
+ */
+function localHeaders(
+  incoming: Record<string, string>,
+  env: EnvironmentDecl,
+): Record<string, string> {
+  const headers: Record<string, string> = { ...incoming };
+  for (const h of Object.keys(headers)) {
+    const k = h.toLowerCase();
+    // sec-fetch-* carries the same cross-site signal some servers act on.
+    if (k === 'origin' || k === 'referer' || k.startsWith('sec-fetch-')) {
+      delete headers[h];
+    }
+  }
+  // The local app should see itself as the host, not the broker.
+  headers['host'] = `${env.host ?? '127.0.0.1'}:${env.port}`;
+  return headers;
+}
+
 // ------------------------------------------------------------------ serve
 
 class Agent {
@@ -184,10 +211,8 @@ class Agent {
     }
 
     const body = frame.b64 ? Buffer.from(frame.b64, 'base64') : null;
-    const headers: Record<string, string> = { ...frame.headers };
+    const headers = localHeaders(frame.headers, env);
     if (body) headers['content-length'] = String(body.length);
-    // The local app should see itself as the origin, not the broker.
-    headers['host'] = `${env.host ?? '127.0.0.1'}:${env.port}`;
 
     const req = httpRequest(
       {
@@ -244,7 +269,9 @@ class Agent {
     const host = env.host ?? '127.0.0.1';
     const target = `ws://${host}:${env.port}${frame.path}`;
     const local = new WebSocket(target, frame.protocols, {
-      headers: { ...frame.headers, host: `${host}:${env.port}` },
+      // Same reasoning as the HTTP path: a forwarded Origin makes servers that
+      // police WebSocket origins reject the upgrade outright.
+      headers: localHeaders(frame.headers, env),
     });
     this.sockets.set(frame.id, local);
 

@@ -1,5 +1,4 @@
-# Whatever this machine is already running. gpupool neither knows nor cares
-# what is behind the port -- here it happens to be Ollama.
+# This machine: Ollama on its default port.
 environments:
   chatapp:
     port: 11434
