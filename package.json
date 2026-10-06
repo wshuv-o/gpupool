@@ -15,7 +15,7 @@
     "prepublishOnly": "npm run build"
   },
   "bin": {
-    "gpupool": "./dist/agent/index.js"
+    "gpupool": "dist/agent/index.js"
   },
   "dependencies": {
     "ws": "^8.18.0",
@@ -32,7 +32,7 @@
   "description": "Expose a local port to the internet across several machines, with automatic failover when one is off.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wshuv-o/gpupool.git"
+    "url": "git+https://github.com/wshuv-o/gpupool.git"
   },
   "homepage": "https://wshuv-o.github.io/gpupool/",
   "files": [
