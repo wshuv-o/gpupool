@@ -4,3 +4,7 @@ build/
 *.log
 test/machine*/
 broker.config.json
+
+# local backups of credential-bearing config
+*.bak
+broker.config.*.json
