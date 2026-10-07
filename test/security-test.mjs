@@ -106,6 +106,46 @@ try {
   });
   record('the block lifts on its own', after.status === 200);
 
+  // --- a spoofed X-Forwarded-For must not buy a fresh identity ------------
+  // The broker reads the address its trusted proxy appended, which is the
+  // RIGHT-most entry. Reading the left-most instead means a caller invents an
+  // address per request and the limiter never fires.
+  const spoofer = broker(8833, {
+    GPUPOOL_ADMIN_KEY: 'adm_correct',
+    GPUPOOL_APP_KEYS: '{"pk_ok":"env"}',
+    GPUPOOL_AUTH_MAX_FAILURES: '4',
+    GPUPOOL_AUTH_BLOCK_MS: '8000',
+    GPUPOOL_TRUST_PROXY: '1',
+    GPUPOOL_TOKEN_STORE: '.sec-tokens-3.json',
+  });
+  await waitUp(8833);
+
+  // This is the shape nginx produces: whatever the caller claimed, with the
+  // address nginx actually saw appended on the right. The attacker rotates
+  // the left part; the right stays put because they cannot forge it.
+  const spoofed = [];
+  for (let i = 0; i < 8; i++) {
+    const r = await fetch('http://127.0.0.1:8833/api/tags', {
+      headers: {
+        authorization: `Bearer pk_guess_${i}`,
+        'x-forwarded-for': `203.0.113.${i}, 10.0.0.5`,
+      },
+    });
+    spoofed.push(r.status);
+  }
+  record(
+    'rotating the claimed half of X-Forwarded-For does not evade the limiter',
+    spoofed.slice(0, 4).every((c) => c === 401) && spoofed.slice(4).every((c) => c === 429),
+  );
+
+  // The flip side: a genuinely different client must not inherit that block,
+  // or one attacker locks out everyone behind the same proxy.
+  const other = await fetch('http://127.0.0.1:8833/api/tags', {
+    headers: { authorization: 'Bearer pk_ok', 'x-forwarded-for': '203.0.113.9, 10.0.0.6' },
+  });
+  record('a different real client is unaffected by that block', other.status !== 429);
+  void spoofer;
+
   // --- a wrong admin key is still just wrong ------------------------------
   const wrongAdmin = await fetch('http://127.0.0.1:8832/_status', {
     headers: { authorization: 'Bearer adm_wrong' },

@@ -51,12 +51,15 @@ export interface BrokerConfig {
   /** Invite lifetime. Short: a code is meant to be used straight away. */
   inviteTtlMs: number;
   /**
-   * Trust X-Forwarded-For. Turn this ON behind a reverse proxy, or every
-   * request looks like it came from 127.0.0.1 and one attacker locks out the
-   * whole world. Leave it OFF when the broker faces the internet directly, or
-   * a caller spoofs the header for a fresh identity on every request.
+   * How many proxies sit in front of the broker.
+   *
+   * 0 (default) ignores X-Forwarded-For entirely — correct when the broker
+   * faces the internet directly, where the header is purely caller-supplied.
+   * 1 for a single nginx. 2 if a CDN fronts that nginx. The number says how
+   * far from the right of the header the real client address sits, so setting
+   * it too high reads an address the caller controls.
    */
-  trustProxy: boolean;
+  trustedProxyHops: number;
   /** Failed authentications from one address before it is blocked. */
   authMaxFailures: number;
   /** Failures spread wider apart than this are treated as unrelated. */
@@ -118,12 +121,20 @@ export function loadConfig(path = 'broker.config.json'): BrokerConfig {
     tokenStorePath:
       process.env.GPUPOOL_TOKEN_STORE ?? file.tokenStorePath ?? 'broker.tokens.json',
     inviteTtlMs: Number(process.env.GPUPOOL_INVITE_TTL_MS ?? 600_000),
-    trustProxy: (process.env.GPUPOOL_TRUST_PROXY ?? file.trustProxy ?? '') === 'true' ||
-      file.trustProxy === true,
+    trustedProxyHops: parseHops(process.env.GPUPOOL_TRUST_PROXY ?? file.trustProxy),
     authMaxFailures: Number(process.env.GPUPOOL_AUTH_MAX_FAILURES ?? 10),
     authWindowMs: Number(process.env.GPUPOOL_AUTH_WINDOW_MS ?? 300_000),
     authBlockMs: Number(process.env.GPUPOOL_AUTH_BLOCK_MS ?? 900_000),
   };
+}
+
+/** Accepts `true` (meaning one proxy), a count, or nothing at all. */
+function parseHops(value: string | boolean | undefined): number {
+  if (value === undefined || value === '') return 0;
+  if (value === true || value === 'true') return 1;
+  if (value === false || value === 'false') return 0;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
 export function bearer(header: string | undefined): string | null {

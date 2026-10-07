@@ -22,7 +22,7 @@ const limiter = new AuthLimiter(cfg.authMaxFailures, cfg.authWindowMs, cfg.authB
 
 /** Refuse the request when this client has been guessing. */
 function rateLimited(req: IncomingMessage, res: ServerResponse): boolean {
-  const ip = clientIp(req, cfg.trustProxy);
+  const ip = clientIp(req, cfg.trustedProxyHops);
   if (!limiter.blocked(ip)) return false;
   const retry = limiter.retryAfter(ip);
   res.setHeader('retry-after', String(retry));
@@ -32,7 +32,7 @@ function rateLimited(req: IncomingMessage, res: ServerResponse): boolean {
 
 /** Record a failed authentication and log when it escalates to a block. */
 function authFailed(req: IncomingMessage, what: string): void {
-  const ip = clientIp(req, cfg.trustProxy);
+  const ip = clientIp(req, cfg.trustedProxyHops);
   if (limiter.fail(ip)) log(`blocked ${ip} after repeated ${what} failures`);
 }
 
@@ -153,7 +153,7 @@ async function handleProxy(req: IncomingMessage, res: ServerResponse): Promise<v
     apiError(res, 401, 'Invalid API key.', 'invalid_key', req);
     return;
   }
-  limiter.succeed(clientIp(req, cfg.trustProxy));
+  limiter.succeed(clientIp(req, cfg.trustedProxyHops));
 
   // Read the body before routing: the model name lives in it, and routing to
   // a machine that already holds that model saves a cold load worth far more
@@ -284,7 +284,7 @@ function handleInvite(req: IncomingMessage, res: ServerResponse): void {
     apiError(res, 401, 'Admin key required.', 'invalid_key', req);
     return;
   }
-  limiter.succeed(clientIp(req, cfg.trustProxy));
+  limiter.succeed(clientIp(req, cfg.trustedProxyHops));
   const invite = enrolment.create();
   log(`invite ${invite.code} issued (expires in ${Math.round(cfg.inviteTtlMs / 1000)}s)`);
   json(res, 200, { code: invite.code, expiresAt: invite.expiresAt }, req);
@@ -325,7 +325,7 @@ async function handleJoin(req: IncomingMessage, res: ServerResponse): Promise<vo
     apiError(res, 401, 'That code is not valid. Ask for a fresh one.', 'invalid_code', req);
     return;
   }
-  limiter.succeed(clientIp(req, cfg.trustProxy));
+  limiter.succeed(clientIp(req, cfg.trustedProxyHops));
   log(`machine "${label}" enrolled via invite (${normalise(doc.code)})`);
   json(res, 200, { token: granted.token, agentId: granted.agentId, label }, req);
 }
@@ -340,7 +340,7 @@ function handleStatus(req: IncomingMessage, res: ServerResponse): void {
     apiError(res, 401, 'Admin key required.', 'invalid_key', req);
     return;
   }
-  limiter.succeed(clientIp(req, cfg.trustProxy));
+  limiter.succeed(clientIp(req, cfg.trustedProxyHops));
   json(res, 200, {
     ok: true,
     protocol: PROTOCOL_VERSION,
@@ -441,7 +441,7 @@ server.on('upgrade', (req, socket, head) => {
 
   if (path === '/_agent') {
     const token = bearer(req.headers.authorization);
-    const ip = clientIp(req, cfg.trustProxy);
+    const ip = clientIp(req, cfg.trustedProxyHops);
     if (limiter.blocked(ip)) {
       rejectUpgrade(socket, 429, 'Too many failed attempts.');
       return;
@@ -696,12 +696,12 @@ server.listen(cfg.port, cfg.host, () => {
   if (cfg.corsOrigin === '*') {
     log('  NOTE: CORS allows any origin; set GPUPOOL_CORS_ORIGIN to restrict which sites may use an app key');
   }
-  if (!cfg.trustProxy && cfg.host === '127.0.0.1') {
+  if (!cfg.trustedProxyHops && cfg.host === '127.0.0.1') {
     // Loopback binding means a proxy is in front, and without trustProxy every
     // caller shares one rate-limit bucket.
     log('  WARNING: bound to loopback but GPUPOOL_TRUST_PROXY is not set; rate limiting will see every client as 127.0.0.1');
   }
-  if (cfg.trustProxy && cfg.host !== '127.0.0.1') {
+  if (cfg.trustedProxyHops && cfg.host !== '127.0.0.1') {
     log('  WARNING: GPUPOOL_TRUST_PROXY is set while not behind a proxy; X-Forwarded-For can be spoofed to evade rate limiting');
   }
 });

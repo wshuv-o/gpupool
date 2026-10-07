@@ -81,11 +81,15 @@ GPUPOOL_TOKEN_STORE=$STATE/tokens.json
 # site; '*' is convenient but lets any page use a key it has obtained.
 GPUPOOL_CORS_ORIGIN=*
 
-# nginx terminates TLS, so every request reaches the broker from 127.0.0.1.
-# Without this the rate limiter sees one client and a single attacker would
-# lock out everybody. Only safe BECAUSE the broker is bound to loopback and
-# nginx is the only thing that can reach it.
-GPUPOOL_TRUST_PROXY=true
+# How many proxies sit in front. 1 = this nginx. Without it the rate limiter
+# sees every request as 127.0.0.1 and one attacker locks out everybody.
+#
+# The broker reads the address the LAST proxy appended, and the nginx config
+# overwrites X-Forwarded-For rather than appending to it — between them a
+# caller cannot claim an address and get a fresh rate-limit bucket per
+# request. Raise this to 2 only if a CDN sits in front of nginx; too high and
+# you are back to reading a value the caller controls.
+GPUPOOL_TRUST_PROXY=1
 
 # Failed authentications from one address before it is blocked, the window
 # they must fall within, and how long the block lasts.

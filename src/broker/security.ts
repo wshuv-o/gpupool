@@ -27,17 +27,33 @@ export function safeEqual(a: string | null | undefined, b: string | null | undef
  * proxy we trust is setting it — otherwise a caller spoofs the header and gets
  * a fresh identity per request, defeating the limiter entirely.
  */
-export function clientIp(req: IncomingMessage, trustProxy: boolean): string {
-  if (trustProxy) {
-    const fwd = req.headers['x-forwarded-for'];
-    const raw = Array.isArray(fwd) ? fwd[0] : fwd;
-    if (raw) {
-      // Left-most is the original client; proxies append as they go.
-      const first = raw.split(',')[0]?.trim();
-      if (first) return first;
-    }
-  }
-  return req.socket.remoteAddress ?? 'unknown';
+export function clientIp(req: IncomingMessage, trustedHops: number): string {
+  const direct = req.socket.remoteAddress ?? 'unknown';
+  if (trustedHops <= 0) return direct;
+
+  const fwd = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(fwd) ? fwd.join(',') : fwd;
+  if (!raw) return direct;
+
+  const parts = raw
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return direct;
+
+  // Read from the RIGHT. X-Forwarded-For grows left-to-right as it passes
+  // through proxies, and each proxy appends the address it actually saw — so
+  // the right-most entries are the ones written by infrastructure we trust,
+  // and everything to their left is whatever the caller chose to claim.
+  //
+  // Taking the left-most entry, as this used to, means a caller sets
+  // "X-Forwarded-For: 1.2.3.4", changes it every request, and gets a fresh
+  // identity each time — which defeats rate limiting entirely.
+  //
+  // With one proxy in front, that is the last entry. With a CDN in front of
+  // that proxy, it is the second to last, and so on.
+  const idx = parts.length - trustedHops;
+  return parts[Math.max(0, idx)] ?? direct;
 }
 
 interface Bucket {
