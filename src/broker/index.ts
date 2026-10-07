@@ -5,6 +5,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import { loadConfig, bearer } from './config.js';
 import { Enrolment, normalise } from './enrol.js';
+import { AuthLimiter, clientIp, safeEqual } from './security.js';
 import { AgentConn, Registry } from './registry.js';
 import {
   PROTOCOL_VERSION,
@@ -17,6 +18,23 @@ import {
 const cfg = loadConfig();
 const registry = new Registry(cfg.sessionTtlMs);
 const enrolment = new Enrolment(cfg.tokenStorePath, cfg.inviteTtlMs);
+const limiter = new AuthLimiter(cfg.authMaxFailures, cfg.authWindowMs, cfg.authBlockMs);
+
+/** Refuse the request when this client has been guessing. */
+function rateLimited(req: IncomingMessage, res: ServerResponse): boolean {
+  const ip = clientIp(req, cfg.trustProxy);
+  if (!limiter.blocked(ip)) return false;
+  const retry = limiter.retryAfter(ip);
+  res.setHeader('retry-after', String(retry));
+  apiError(res, 429, `Too many failed attempts. Try again in ${retry}s.`, 'rate_limited', req);
+  return true;
+}
+
+/** Record a failed authentication and log when it escalates to a block. */
+function authFailed(req: IncomingMessage, what: string): void {
+  const ip = clientIp(req, cfg.trustProxy);
+  if (limiter.fail(ip)) log(`blocked ${ip} after repeated ${what} failures`);
+}
 
 function log(...args: unknown[]): void {
   console.log(new Date().toISOString(), ...args);
@@ -102,7 +120,26 @@ function modelFromBody(body: Buffer): string | undefined {
   }
 }
 
+/**
+ * Resolve an app key to its environment without leaking it through timing.
+ *
+ * A Map lookup compares key bytes and returns early on the first difference,
+ * so response time reveals how much of a guessed key was right. Walking every
+ * key with a constant-time compare costs microseconds and removes that.
+ */
+function lookupAppKey(key: string): string | undefined {
+  let found: string | undefined;
+  for (const [candidate, env] of cfg.appKeys) {
+    // No early exit: the loop must take the same time whether or not it
+    // matched, and whichever entry matched.
+    if (safeEqual(candidate, key)) found = env;
+  }
+  return found;
+}
+
 async function handleProxy(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (rateLimited(req, res)) return;
+
   const key =
     bearer(req.headers.authorization) ?? (req.headers['x-gpupool-key'] as string | undefined);
   if (!key) {
@@ -110,11 +147,13 @@ async function handleProxy(req: IncomingMessage, res: ServerResponse): Promise<v
     return;
   }
 
-  const env = cfg.appKeys.get(key);
+  const env = lookupAppKey(key);
   if (!env) {
+    authFailed(req, 'app key');
     apiError(res, 401, 'Invalid API key.', 'invalid_key', req);
     return;
   }
+  limiter.succeed(clientIp(req, cfg.trustProxy));
 
   // Read the body before routing: the model name lives in it, and routing to
   // a machine that already holds that model saves a cold load worth far more
@@ -239,10 +278,13 @@ function handleInvite(req: IncomingMessage, res: ServerResponse): void {
     apiError(res, 405, 'POST required.', 'method_not_allowed', req);
     return;
   }
-  if (!cfg.adminKey || bearer(req.headers.authorization) !== cfg.adminKey) {
+  if (rateLimited(req, res)) return;
+  if (!cfg.adminKey || !safeEqual(bearer(req.headers.authorization), cfg.adminKey)) {
+    authFailed(req, 'admin key');
     apiError(res, 401, 'Admin key required.', 'invalid_key', req);
     return;
   }
+  limiter.succeed(clientIp(req, cfg.trustProxy));
   const invite = enrolment.create();
   log(`invite ${invite.code} issued (expires in ${Math.round(cfg.inviteTtlMs / 1000)}s)`);
   json(res, 200, { code: invite.code, expiresAt: invite.expiresAt }, req);
@@ -250,6 +292,7 @@ function handleInvite(req: IncomingMessage, res: ServerResponse): void {
 
 /** Exchange an invite code for a permanent agent token. */
 async function handleJoin(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (rateLimited(req, res)) return;
   if (req.method !== 'POST') {
     apiError(res, 405, 'POST required.', 'method_not_allowed', req);
     return;
@@ -275,19 +318,29 @@ async function handleJoin(req: IncomingMessage, res: ServerResponse): Promise<vo
   const granted = enrolment.redeem(doc.code, label, doc.agentId.slice(0, 64));
   if (!granted) {
     // One message for unknown, expired and already-used: distinguishing them
-    // would let someone probe which codes exist.
+    // would let someone probe which codes exist. Rate limiting is what makes
+    // the code length meaningful — 28^8 is only out of reach if you cannot
+    // try thousands per second.
+    authFailed(req, 'invite code');
     apiError(res, 401, 'That code is not valid. Ask for a fresh one.', 'invalid_code', req);
     return;
   }
+  limiter.succeed(clientIp(req, cfg.trustProxy));
   log(`machine "${label}" enrolled via invite (${normalise(doc.code)})`);
   json(res, 200, { token: granted.token, agentId: granted.agentId, label }, req);
 }
 
 function handleStatus(req: IncomingMessage, res: ServerResponse): void {
-  if (cfg.adminKey && bearer(req.headers.authorization) !== cfg.adminKey) {
+  if (rateLimited(req, res)) return;
+  // Fails CLOSED. This previously skipped the check entirely when no admin key
+  // was configured, publishing machine labels, ports, model inventories and
+  // request counts to anyone who asked.
+  if (!cfg.adminKey || !safeEqual(bearer(req.headers.authorization), cfg.adminKey)) {
+    authFailed(req, 'admin key');
     apiError(res, 401, 'Admin key required.', 'invalid_key', req);
     return;
   }
+  limiter.succeed(clientIp(req, cfg.trustProxy));
   json(res, 200, {
     ok: true,
     protocol: PROTOCOL_VERSION,
@@ -363,6 +416,15 @@ interface Tunnel {
 
 const tunnels = new Map<string, Tunnel>();
 
+/** Constant-time membership test, for the same reason as lookupAppKey. */
+function hasAgentToken(token: string): boolean {
+  let found = false;
+  for (const candidate of cfg.agentTokens) {
+    if (safeEqual(candidate, token)) found = true;
+  }
+  return found;
+}
+
 function rejectUpgrade(socket: import('node:stream').Duplex, status: number, msg: string): void {
   const body = JSON.stringify({ error: { message: msg } });
   socket.write(
@@ -379,7 +441,13 @@ server.on('upgrade', (req, socket, head) => {
 
   if (path === '/_agent') {
     const token = bearer(req.headers.authorization);
-    if (!token || !(cfg.agentTokens.has(token) || enrolment.has(token))) {
+    const ip = clientIp(req, cfg.trustProxy);
+    if (limiter.blocked(ip)) {
+      rejectUpgrade(socket, 429, 'Too many failed attempts.');
+      return;
+    }
+    if (!token || !(hasAgentToken(token) || enrolment.has(token))) {
+      if (limiter.fail(ip)) log(`blocked ${ip} after repeated agent token failures`);
       rejectUpgrade(socket, 401, 'Invalid agent token.');
       return;
     }
@@ -605,6 +673,12 @@ setInterval(
   Math.max(1000, Math.floor(cfg.heartbeatMs / 2)),
 ).unref();
 
+// A client that opens a socket and dribbles headers forever holds a connection
+// for nothing. Node's defaults are permissive; these are not.
+server.headersTimeout = 20_000;
+server.requestTimeout = 0; // per-request ceiling is cfg.requestTimeoutMs, which understands streaming
+server.keepAliveTimeout = 65_000;
+
 server.listen(cfg.port, cfg.host, () => {
   log(`broker listening on ${cfg.host ?? '0.0.0.0'}:${cfg.port}`);
   if (!cfg.host) {
@@ -615,5 +689,19 @@ server.listen(cfg.port, cfg.host, () => {
   log(`  app keys: ${cfg.appKeys.size}  agent tokens: ${cfg.agentTokens.size}`);
   if (cfg.appKeys.size === 0) {
     log('  WARNING: no app keys configured; every request will 401');
+  }
+  if (!cfg.adminKey) {
+    log('  WARNING: no admin key; /_status and /_invite are disabled until one is set');
+  }
+  if (cfg.corsOrigin === '*') {
+    log('  NOTE: CORS allows any origin; set GPUPOOL_CORS_ORIGIN to restrict which sites may use an app key');
+  }
+  if (!cfg.trustProxy && cfg.host === '127.0.0.1') {
+    // Loopback binding means a proxy is in front, and without trustProxy every
+    // caller shares one rate-limit bucket.
+    log('  WARNING: bound to loopback but GPUPOOL_TRUST_PROXY is not set; rate limiting will see every client as 127.0.0.1');
+  }
+  if (cfg.trustProxy && cfg.host !== '127.0.0.1') {
+    log('  WARNING: GPUPOOL_TRUST_PROXY is set while not behind a proxy; X-Forwarded-For can be spoofed to evade rate limiting');
   }
 });

@@ -50,6 +50,19 @@ export interface BrokerConfig {
   tokenStorePath: string;
   /** Invite lifetime. Short: a code is meant to be used straight away. */
   inviteTtlMs: number;
+  /**
+   * Trust X-Forwarded-For. Turn this ON behind a reverse proxy, or every
+   * request looks like it came from 127.0.0.1 and one attacker locks out the
+   * whole world. Leave it OFF when the broker faces the internet directly, or
+   * a caller spoofs the header for a fresh identity on every request.
+   */
+  trustProxy: boolean;
+  /** Failed authentications from one address before it is blocked. */
+  authMaxFailures: number;
+  /** Failures spread wider apart than this are treated as unrelated. */
+  authWindowMs: number;
+  /** How long a blocked address stays blocked. */
+  authBlockMs: number;
 }
 
 interface FileShape {
@@ -60,6 +73,7 @@ interface FileShape {
   adminKey?: string;
   corsOrigin?: string;
   tokenStorePath?: string;
+  trustProxy?: boolean | string;
 }
 
 /**
@@ -104,6 +118,11 @@ export function loadConfig(path = 'broker.config.json'): BrokerConfig {
     tokenStorePath:
       process.env.GPUPOOL_TOKEN_STORE ?? file.tokenStorePath ?? 'broker.tokens.json',
     inviteTtlMs: Number(process.env.GPUPOOL_INVITE_TTL_MS ?? 600_000),
+    trustProxy: (process.env.GPUPOOL_TRUST_PROXY ?? file.trustProxy ?? '') === 'true' ||
+      file.trustProxy === true,
+    authMaxFailures: Number(process.env.GPUPOOL_AUTH_MAX_FAILURES ?? 10),
+    authWindowMs: Number(process.env.GPUPOOL_AUTH_WINDOW_MS ?? 300_000),
+    authBlockMs: Number(process.env.GPUPOOL_AUTH_BLOCK_MS ?? 900_000),
   };
 }
 

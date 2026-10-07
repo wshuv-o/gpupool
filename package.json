@@ -11,7 +11,7 @@
     "agent": "node dist/agent/index.js",
     "binary": "node scripts/build-binary.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node test/run-all.mjs",
+    "test": "node test/run-all.mjs && node test/security-test.mjs",
     "prepublishOnly": "npm run build"
   },
   "bin": {

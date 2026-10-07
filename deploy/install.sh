@@ -71,6 +71,18 @@ GPUPOOL_TOKEN_STORE=$STATE/tokens.json
 # Browsers may call the broker from these origins. Narrow this to your own
 # site; '*' is convenient but lets any page use a key it has obtained.
 GPUPOOL_CORS_ORIGIN=*
+
+# nginx terminates TLS, so every request reaches the broker from 127.0.0.1.
+# Without this the rate limiter sees one client and a single attacker would
+# lock out everybody. Only safe BECAUSE the broker is bound to loopback and
+# nginx is the only thing that can reach it.
+GPUPOOL_TRUST_PROXY=true
+
+# Failed authentications from one address before it is blocked, the window
+# they must fall within, and how long the block lasts.
+GPUPOOL_AUTH_MAX_FAILURES=10
+GPUPOOL_AUTH_WINDOW_MS=300000
+GPUPOOL_AUTH_BLOCK_MS=900000
 EOF
   chown root:"$SERVICE_USER" "$CONF/broker.env"
   chmod 0640 "$CONF/broker.env"

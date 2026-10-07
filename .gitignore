@@ -12,3 +12,4 @@ broker.config.*.json
 # runtime-granted agent tokens
 broker.tokens.json
 test/.tokens.json
+test/.sec-tokens-*.json
