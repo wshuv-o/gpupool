@@ -13,3 +13,4 @@ broker.config.*.json
 broker.tokens.json
 test/.tokens.json
 test/.sec-tokens-*.json
+test/dbg*/

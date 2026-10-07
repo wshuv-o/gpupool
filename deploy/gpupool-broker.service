@@ -15,6 +15,9 @@ Type=simple
 User=gpupool
 Group=gpupool
 WorkingDirectory=/opt/gpupool
+# install.sh rewrites this line with the node it actually verified. Distro
+# packages are often too old — Ubuntu 24.04 ships 18, and this needs 20+ — so
+# hardcoding /usr/bin/node fails on exactly the machines that needed care.
 ExecStart=/usr/bin/node /opt/gpupool/dist/broker/index.js
 
 # Config lives in a file root owns and the service user can only read, so the
@@ -36,10 +39,15 @@ ReadWritePaths=/var/lib/gpupool
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6
+# AF_UNIX is included because Node uses it internally for stdio and IPC.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
+
+# MemoryDenyWriteExecute is deliberately NOT set. V8 compiles JavaScript to
+# machine code at runtime, so it needs pages that are both writable and
+# executable; denying that stops node from starting at all. It is good
+# hardening for programs without a JIT, and useless advice for this one.
 
 [Install]
 WantedBy=multi-user.target

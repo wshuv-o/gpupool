@@ -18,13 +18,22 @@ die() { echo "error: $*" >&2; exit 1; }
 
 echo "==> checking prerequisites"
 command -v git >/dev/null || die "git not installed: apt install git"
-if ! command -v node >/dev/null; then
-  die "node not installed. Node 20+ is required:
+# NODE_BIN lets you point at a newer node without touching system packages:
+#   sudo NODE_BIN=/opt/node22/bin/node bash install.sh
+NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
+[[ -n "$NODE_BIN" ]] || die "node not found. Node 20+ is required:
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt install -y nodejs
+or install it anywhere and re-run with NODE_BIN=/path/to/node"
+NODE_BIN=$(readlink -f "$NODE_BIN")
+NODE_MAJOR=$("$NODE_BIN" -p 'process.versions.node.split(".")[0]')
+if [[ "$NODE_MAJOR" -lt 20 ]]; then
+  die "$NODE_BIN is v$NODE_MAJOR; need 20+.
+Ubuntu 24.04 ships 18, so install a newer one and re-run with NODE_BIN=/path/to/node:
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt install -y nodejs"
 fi
-NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
-[[ "$NODE_MAJOR" -ge 20 ]] || die "node $NODE_MAJOR is too old; need 20+"
-echo "    node $(node -v)"
+echo "    node $("$NODE_BIN" -v) at $NODE_BIN"
+# Everything below must use the same node, not whatever PATH resolves to.
+export PATH="$(dirname "$NODE_BIN"):$PATH"
 
 echo "==> service user"
 id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
@@ -96,7 +105,11 @@ fi
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$STATE"
 
 echo "==> systemd"
-install -m 0644 "$PREFIX/deploy/gpupool-broker.service" /etc/systemd/system/gpupool-broker.service
+# Substitute the verified interpreter rather than shipping a guess that is
+# wrong on any box whose node is not /usr/bin/node.
+sed "s|^ExecStart=.*|ExecStart=$NODE_BIN $PREFIX/dist/broker/index.js|"   "$PREFIX/deploy/gpupool-broker.service" > /etc/systemd/system/gpupool-broker.service
+chmod 0644 /etc/systemd/system/gpupool-broker.service
+echo "    ExecStart=$NODE_BIN"
 systemctl daemon-reload
 systemctl enable --quiet gpupool-broker
 systemctl restart gpupool-broker
