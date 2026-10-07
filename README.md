@@ -31,19 +31,41 @@ enough.
 
 ## On a GPU machine
 
-Pair once, install as a service, done. Credentials persist in
-`~/.gpupool/credentials.json`.
+Ask whoever runs the broker for a join code, then:
 
 ```bash
-gpupool login --broker https://broker.example.com \
-              --token at_REPLACE_WITH_YOUR_OWN \
-              --label office-3090
+gpupool join K7M2PQXR --broker https://broker.example.com --label office-3090
 gpupool service install            # survives reboots
 ```
 
-`gpupool serve` runs it in the foreground instead, which is what you want while
-getting the manifest right.
+That is the whole setup. `join` redeems the code for a permanent token, looks
+for AI servers already running on this machine — Ollama, ComfyUI, A1111, vLLM,
+LM Studio, KoboldCpp — and writes `gpupool.yaml` from what it finds. It will
+not overwrite a manifest you already wrote.
 
+Codes are single-use and expire in ten minutes. Retyping one off a screen is
+fine: case and dashes are ignored, and the alphabet carries no vowels and no
+0/O/1/I, so there are no accidental words and nothing ambiguous to misread.
+
+Whoever runs the broker mints one with:
+
+```bash
+curl -X POST https://broker.example.com/_invite -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+Nothing restarts, and the broker's config file is never rewritten — granted
+tokens live in their own store, so admitting a machine does not disturb the
+ones already connected.
+
+If you were handed a token directly instead, `gpupool login` is the manual
+path and still works.
+
+`gpupool serve` runs in the foreground, which is what you want while getting a
+manifest right. Credentials persist in `~/.gpupool/credentials.json`.
+
+### Writing the manifest yourself
+
+`join` writes one for you, but it is an ordinary file you own afterwards.
 Declare what to expose in `gpupool.yaml`. gpupool neither knows nor cares what
 is behind the port:
 
@@ -173,22 +195,57 @@ Requests without the header are balanced normally, so this changes nothing for
 stateless callers. Configure with `GPUPOOL_SESSION_HEADER` and
 `GPUPOOL_SESSION_TTL_MS`.
 
+## Which machine serves a request
+
+Two machines serving the same environment are not interchangeable. Loading a
+13 GB model costs tens of seconds, so the broker reads the model name out of
+the request body and prefers, in order:
+
+1. a machine with that model already resident in VRAM
+2. a machine that holds it on disk
+3. anything ready, if neither of the above matches
+
+Agents report this inventory themselves, by asking the local app: Ollama's
+`/api/ps` and `/api/tags`, or `/v1/models` on anything OpenAI-compatible. An
+app gpupool cannot introspect reports nothing, and routing falls back to
+least-busy exactly as before — absent inventory means "cannot tell", never
+"has nothing". A stale inventory costs you a 404 from the app rather than a
+refusal from the broker, which is the right way round.
+
+Sticky sessions still apply, but only within the best tier: a warm KV cache is
+worth less than avoiding a cold model load.
+
+`/_status` shows what each machine reported, so a routing decision is always
+explainable after the fact.
+
+## When everything is busy
+
+A saturated pool parks the request until a slot frees, rather than answering
+503. A refused caller only retries, and a retry storm is worse than an orderly
+queue. Waiting is bounded by `GPUPOOL_QUEUE_TIMEOUT_MS` (default 120s) and
+`GPUPOOL_QUEUE_LIMIT` (default 100 per environment); past either, you get a
+503. A client that hangs up while queued is dropped without ever occupying a
+GPU.
+
+`/_status` reports `queued` so backlog is visible rather than inferred from
+latency.
+
 ## When nothing is available
 
-A request for an environment with no live machine gets `503` immediately rather
-than hanging:
+503 is kept for the case it actually describes — no machine serves the
+environment at all:
 
 ```json
-{ "error": { "message": "No machine available for environment \"chatapp\" right now. Try again later.",
+{ "error": { "message": "No machine is serving environment \"chatapp\". Check the agent gpupool.yaml.",
              "type": "no_capacity" } }
 ```
 
-The message distinguishes two cases, because they need different fixes:
+The two messages need different fixes:
 
-- **"No machine available ... try again later"** — a machine declares this
-  environment but none is ready right now. Temporary.
-- **"No machine is serving ..."** — nothing in the pool declares it at all.
-  A config mistake.
+- **"No machine is serving ..."** — nothing in the pool declares it. A config
+  mistake, and queueing would only stall you.
+- **"No machine available ... try again later"** — machines declare it but the
+  queue timed out waiting for one. Temporary.
 
 ## Running the broker
 
@@ -317,18 +374,27 @@ node test/run-all.mjs
 ```
 
 Brings up a two-machine pool on localhost — machine A serving three
-environments, machine B two — and checks all nine properties:
+environments, machine B two — and checks every property:
 
 ```
-PASS  payload byte-identical to a direct call
-PASS  requests without a valid key are rejected
-PASS  an app key cannot reach another environment's port
-PASS  SSE streams rather than buffers
-PASS  websocket tunnel relays both directions
-PASS  session affinity overrides least-busy
-PASS  environment on two machines survives losing one
-PASS  environment on only the dead machine returns 503
-PASS  a machine that comes back rejoins on its own
+  PASS  payload byte-identical to a direct call
+  PASS  requests without a valid key are rejected
+  PASS  an app key cannot reach another environment's port
+  PASS  browser Origin is not forwarded to the local app
+  PASS  a loaded model wins over least-busy
+  PASS  a request routes to the only machine holding the model
+  PASS  an unknown model is still routed, not refused
+  PASS  a saturated pool queues instead of returning 503
+  PASS  invite codes are admin-only
+  PASS  an invite code works once and only once
+  PASS  a code survives being retyped with dashes and lower case
+  PASS  SSE streams rather than buffers
+  PASS  token streaming through the tunnel matches a direct call
+  PASS  websocket tunnel relays both directions
+  PASS  session affinity overrides least-busy
+  PASS  environment on two machines survives losing one
+  PASS  environment on only the dead machine returns 503
+  PASS  a machine that comes back rejoins on its own
 ```
 
 Two of these are written the way they are for a reason:
@@ -347,10 +413,9 @@ Ollama token-streaming comparison runs as an extra when one is available.
 
 ## Not in this version
 
-- `gpupool login` takes a token you issue by hand; there is no account system
+- machines enrol with an invite code, but there is no account system:
+  anyone holding a code or an agent token is trusted
 - one broker, no multi-region, and its registry is in memory
 - raw TCP (non-HTTP, non-WebSocket) is not forwarded
 - no metering or quotas
 - the binary is unsigned, so Windows Smart App Control blocks it
-- anyone with an agent token can join the pool and serve traffic, so treat
-  agent tokens as trusted
