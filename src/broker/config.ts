@@ -2,6 +2,13 @@ import { readFileSync, existsSync } from 'node:fs';
 
 export interface BrokerConfig {
   port: number;
+  /**
+   * Interface to bind. Defaults to all, which is what you want when the broker
+   * is itself the public endpoint. Set to 127.0.0.1 when a reverse proxy
+   * terminates TLS in front of it — otherwise the broker is also reachable
+   * directly on its own port, in plaintext, bypassing that proxy entirely.
+   */
+  host: string | undefined;
   /** Tokens a machine may present to enrol. One per machine, issued once. */
   agentTokens: Set<string>;
   /** App key -> environment name. This binding is what isolates one app from another. */
@@ -47,6 +54,7 @@ export interface BrokerConfig {
 
 interface FileShape {
   port?: number;
+  host?: string;
   agentTokens?: string[];
   appKeys?: Record<string, string>;
   adminKey?: string;
@@ -80,6 +88,7 @@ export function loadConfig(path = 'broker.config.json'): BrokerConfig {
 
   return {
     port: Number(process.env.PORT ?? file.port ?? 8787),
+    host: process.env.HOST ?? file.host,
     agentTokens,
     appKeys,
     adminKey: process.env.GPUPOOL_ADMIN_KEY ?? file.adminKey ?? null,

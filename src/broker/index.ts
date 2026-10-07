@@ -605,8 +605,13 @@ setInterval(
   Math.max(1000, Math.floor(cfg.heartbeatMs / 2)),
 ).unref();
 
-server.listen(cfg.port, () => {
-  log(`broker listening on :${cfg.port}`);
+server.listen(cfg.port, cfg.host, () => {
+  log(`broker listening on ${cfg.host ?? '0.0.0.0'}:${cfg.port}`);
+  if (!cfg.host) {
+    // Worth saying out loud: behind a TLS-terminating proxy this means the
+    // broker is also reachable directly, in plaintext, on its own port.
+    log('  bound to all interfaces; set HOST=127.0.0.1 if a proxy fronts this');
+  }
   log(`  app keys: ${cfg.appKeys.size}  agent tokens: ${cfg.agentTokens.size}`);
   if (cfg.appKeys.size === 0) {
     log('  WARNING: no app keys configured; every request will 401');

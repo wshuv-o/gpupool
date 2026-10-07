@@ -1,0 +1,45 @@
+# /etc/systemd/system/gpupool-broker.service
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now gpupool-broker
+#   journalctl -u gpupool-broker -f
+
+[Unit]
+Description=gpupool broker
+Documentation=https://github.com/wshuv-o/gpupool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gpupool
+Group=gpupool
+WorkingDirectory=/opt/gpupool
+ExecStart=/usr/bin/node /opt/gpupool/dist/broker/index.js
+
+# Config lives in a file root owns and the service user can only read, so the
+# admin key and agent tokens never sit in the unit file or in `ps` output.
+EnvironmentFile=/etc/gpupool/broker.env
+
+Restart=always
+RestartSec=3
+# A broker holding many idle agent sockets needs more than the default 1024.
+LimitNOFILE=65536
+
+# The broker reads config, writes one token store, and talks to the network.
+# Nothing else is required, so nothing else is permitted.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gpupool
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
