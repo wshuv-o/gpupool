@@ -35,6 +35,14 @@ export interface BrokerConfig {
    * meaningful control is which origins may use it.
    */
   corsOrigin: string;
+  /**
+   * Where tokens granted through /_join are kept. Separate from the config
+   * file so the operator's hand-written settings are never rewritten by the
+   * broker, and so a machine can enrol without a restart.
+   */
+  tokenStorePath: string;
+  /** Invite lifetime. Short: a code is meant to be used straight away. */
+  inviteTtlMs: number;
 }
 
 interface FileShape {
@@ -43,6 +51,7 @@ interface FileShape {
   appKeys?: Record<string, string>;
   adminKey?: string;
   corsOrigin?: string;
+  tokenStorePath?: string;
 }
 
 /**
@@ -83,6 +92,9 @@ export function loadConfig(path = 'broker.config.json'): BrokerConfig {
     queueTimeoutMs: Number(process.env.GPUPOOL_QUEUE_TIMEOUT_MS ?? 120_000),
     queueLimit: Number(process.env.GPUPOOL_QUEUE_LIMIT ?? 100),
     corsOrigin: process.env.GPUPOOL_CORS_ORIGIN ?? file.corsOrigin ?? '*',
+    tokenStorePath:
+      process.env.GPUPOOL_TOKEN_STORE ?? file.tokenStorePath ?? 'broker.tokens.json',
+    inviteTtlMs: Number(process.env.GPUPOOL_INVITE_TTL_MS ?? 600_000),
   };
 }
 

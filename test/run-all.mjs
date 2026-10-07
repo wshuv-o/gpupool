@@ -27,6 +27,7 @@ const ADMIN_KEY = 'admin_local_dev';
 
 const BROKER_ENV = {
   PORT: '8787',
+  GPUPOOL_TOKEN_STORE: 'test/.tokens.json',
   GPUPOOL_AGENT_TOKENS: Object.values(AGENT_TOKENS).join(','),
   GPUPOOL_APP_KEYS: JSON.stringify(APP_KEYS),
   GPUPOOL_ADMIN_KEY: ADMIN_KEY,
@@ -255,6 +256,52 @@ try {
   hog.abort();
   await Promise.allSettled(hogs);
   await waitFor(async () => (await status()).queued === 0, 'queue to drain');
+
+  // 3e. enrolment --------------------------------------------------------
+  // Adding a machine used to mean editing the broker's config and restarting
+  // it, which drops every connected machine to admit one.
+  const noAuth = await fetch('http://127.0.0.1:8787/_invite', { method: 'POST' });
+  const invited = await fetch('http://127.0.0.1:8787/_invite', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${ADMIN_KEY}` },
+  }).then((r) => r.json());
+  record(
+    'invite codes are admin-only',
+    noAuth.status === 401 && typeof invited.code === 'string' && invited.code.length === 8,
+  );
+
+  const joined = await fetch('http://127.0.0.1:8787/_join', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code: invited.code, label: 'joiner', agentId: 'ag_joined' }),
+  }).then((r) => r.json());
+
+  // A code must not be reusable, or one leaked invite enrols a crowd.
+  const replay = await fetch('http://127.0.0.1:8787/_join', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code: invited.code, label: 'replay', agentId: 'ag_replay' }),
+  });
+  record(
+    'an invite code works once and only once',
+    typeof joined.token === 'string' && joined.token.startsWith('ag_') && replay.status === 401,
+  );
+
+  // Lower case, spaces and dashes are how a human retypes a code off a screen.
+  const sloppy = await fetch('http://127.0.0.1:8787/_invite', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${ADMIN_KEY}` },
+  }).then((r) => r.json());
+  const retyped = await fetch('http://127.0.0.1:8787/_join', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      code: `${sloppy.code.slice(0, 4).toLowerCase()}-${sloppy.code.slice(4).toLowerCase()}`,
+      label: 'sloppy',
+      agentId: 'ag_sloppy',
+    }),
+  });
+  record('a code survives being retyped with dashes and lower case', retyped.status === 200);
 
   // 4. streaming -------------------------------------------------------
   // Deterministic source, so this measures the tunnel and not model health.

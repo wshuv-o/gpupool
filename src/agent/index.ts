@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { request as httpRequest, type ClientRequest } from 'node:http';
+import { existsSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { platform } from 'node:os';
 import { WebSocket } from 'ws';
@@ -15,6 +16,7 @@ import {
   type Credentials,
 } from './config.js';
 import { probeAll } from './health.js';
+import { detectEnvironments, renderManifest } from './detect.js';
 import {
   installService,
   uninstallService,
@@ -356,6 +358,95 @@ function cmdLogin(): void {
   console.log('\nnext: gpupool serve');
 }
 
+/**
+ * One command to put a machine in the pool: redeem an invite code, work out
+ * what is already running here, write both files.
+ *
+ * The old path was seven steps across two machines — edit the broker's config,
+ * restart it, copy a token, hand-write a manifest — and every one of them is a
+ * chance to typo something that then looks like a dead app.
+ */
+async function cmdJoin(): Promise<void> {
+  const code = process.argv[3] && !process.argv[3].startsWith('--') ? process.argv[3] : arg('code');
+  const broker = arg('broker');
+  if (!code || !broker) {
+    console.error('usage: gpupool join <code> --broker <url> [--label <name>] [--manifest <path>]');
+    process.exit(1);
+  }
+
+  const existing = loadCredentials();
+  // Reuse the machine identity so re-joining does not orphan the old entry.
+  const agentId = existing?.agentId ?? newAgentId();
+  const label = arg('label') ?? existing?.label ?? defaultLabel();
+
+  const base = broker.replace(/\/$/, '');
+  let res: Response;
+  try {
+    res = await fetch(`${base}/_join`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, label, agentId }),
+    });
+  } catch (err) {
+    console.error(`cannot reach broker at ${base}: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    let message = `broker refused the code (HTTP ${res.status})`;
+    try {
+      const doc = JSON.parse(detail) as { error?: { message?: string } };
+      if (doc.error?.message) message = doc.error.message;
+    } catch {
+      /* non-JSON error body; the status line is enough */
+    }
+    console.error(message);
+    process.exit(1);
+  }
+
+  const granted = (await res.json()) as { token: string; agentId: string };
+  const path = saveCredentials({ broker: base, token: granted.token, agentId, label });
+  console.log(`joined ${base} as "${label}"`);
+  console.log(`credentials saved to ${path}`);
+
+  // Only write a manifest when there is not one already: overwriting someone's
+  // hand-tuned file would be a nasty surprise.
+  const manifestPath = arg('manifest') ?? 'gpupool.yaml';
+  if (existsSync(manifestPath)) {
+    console.log(`
+keeping your existing ${manifestPath}`);
+    console.log('next: gpupool serve');
+    return;
+  }
+
+  process.stdout.write('\nlooking for local AI servers... ');
+  const found = await detectEnvironments();
+  if (found.length === 0) {
+    console.log('none found.');
+    console.log(
+      `
+Nothing is answering on the ports we know (Ollama, ComfyUI, A1111,
+` +
+        `vLLM, LM Studio, KoboldCpp). Start your server, then write ${manifestPath}:
+
+` +
+        `environments:
+  myapp:
+    port: 11434
+    health: /api/tags
+`,
+    );
+    process.exit(1);
+  }
+
+  writeFileSync(manifestPath, renderManifest(found));
+  console.log(`found ${found.length}.`);
+  console.log(`wrote ${manifestPath}:
+  ${describe(found)}`);
+  console.log('\nnext: gpupool serve   (or: gpupool service install)');
+}
+
 function cmdServe(): void {
   const creds = loadCredentials();
   if (!creds) {
@@ -503,6 +594,9 @@ switch (command) {
   case 'login':
     cmdLogin();
     break;
+  case 'join':
+    void cmdJoin();
+    break;
   case 'serve':
     cmdServe();
     break;
@@ -515,6 +609,7 @@ switch (command) {
   default:
     console.log(`gpupool - expose a local port through a shared broker
 
+  gpupool join <code> --broker <url> [--label <name>]
   gpupool login --broker <url> --token <token> [--label <name>]
   gpupool serve [--manifest gpupool.yaml]
   gpupool status [--admin-key <key>]
@@ -522,6 +617,10 @@ switch (command) {
   gpupool service install [--manifest <path>] [--system] [--dry-run]
   gpupool service uninstall [--system]
   gpupool service status [--system]
+
+"join" redeems an invite code from the broker admin, then detects what you
+already run locally and writes gpupool.yaml for you. "login" is the manual
+path when you were handed a token directly.
 
 Service install keeps the agent running across reboots, so the machine joins
 the pool whenever it is powered on. Without --system it starts at logon and

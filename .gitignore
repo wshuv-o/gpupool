@@ -8,3 +8,7 @@ broker.config.json
 # local backups of credential-bearing config
 *.bak
 broker.config.*.json
+
+# runtime-granted agent tokens
+broker.tokens.json
+test/.tokens.json

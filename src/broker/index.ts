@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import { loadConfig, bearer } from './config.js';
+import { Enrolment, normalise } from './enrol.js';
 import { AgentConn, Registry } from './registry.js';
 import {
   PROTOCOL_VERSION,
@@ -15,6 +16,7 @@ import {
 
 const cfg = loadConfig();
 const registry = new Registry(cfg.sessionTtlMs);
+const enrolment = new Enrolment(cfg.tokenStorePath, cfg.inviteTtlMs);
 
 function log(...args: unknown[]): void {
   console.log(new Date().toISOString(), ...args);
@@ -226,6 +228,61 @@ async function handleProxy(req: IncomingMessage, res: ServerResponse): Promise<v
   log(`-> ${agent.label} [${env}] ${req.method} ${req.url} (${id.slice(0, 8)})`);
 }
 
+/**
+ * Mint an invite code. Admin-only: a code is a credential-in-waiting.
+ *
+ * This exists so adding a machine does not mean editing broker.config.json and
+ * restarting — a restart drops every connected machine to admit one.
+ */
+function handleInvite(req: IncomingMessage, res: ServerResponse): void {
+  if (req.method !== 'POST') {
+    apiError(res, 405, 'POST required.', 'method_not_allowed', req);
+    return;
+  }
+  if (!cfg.adminKey || bearer(req.headers.authorization) !== cfg.adminKey) {
+    apiError(res, 401, 'Admin key required.', 'invalid_key', req);
+    return;
+  }
+  const invite = enrolment.create();
+  log(`invite ${invite.code} issued (expires in ${Math.round(cfg.inviteTtlMs / 1000)}s)`);
+  json(res, 200, { code: invite.code, expiresAt: invite.expiresAt }, req);
+}
+
+/** Exchange an invite code for a permanent agent token. */
+async function handleJoin(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== 'POST') {
+    apiError(res, 405, 'POST required.', 'method_not_allowed', req);
+    return;
+  }
+  const body = await readBody(req, 8192);
+  if (body === null) {
+    apiError(res, 413, 'Request body too large.', 'body_too_large', req);
+    return;
+  }
+  let doc: { code?: string; label?: string; agentId?: string };
+  try {
+    doc = JSON.parse(body.toString('utf8')) as typeof doc;
+  } catch {
+    apiError(res, 400, 'Expected a JSON body.', 'bad_request', req);
+    return;
+  }
+  if (!doc.code || !doc.agentId) {
+    apiError(res, 400, 'Both "code" and "agentId" are required.', 'bad_request', req);
+    return;
+  }
+
+  const label = (doc.label ?? 'unnamed').slice(0, 64);
+  const granted = enrolment.redeem(doc.code, label, doc.agentId.slice(0, 64));
+  if (!granted) {
+    // One message for unknown, expired and already-used: distinguishing them
+    // would let someone probe which codes exist.
+    apiError(res, 401, 'That code is not valid. Ask for a fresh one.', 'invalid_code', req);
+    return;
+  }
+  log(`machine "${label}" enrolled via invite (${normalise(doc.code)})`);
+  json(res, 200, { token: granted.token, agentId: granted.agentId, label }, req);
+}
+
 function handleStatus(req: IncomingMessage, res: ServerResponse): void {
   if (cfg.adminKey && bearer(req.headers.authorization) !== cfg.adminKey) {
     apiError(res, 401, 'Admin key required.', 'invalid_key', req);
@@ -270,6 +327,8 @@ const server = createServer((req, res) => {
     return;
   }
 
+  if (path === '/_invite') return handleInvite(req, res);
+  if (path === '/_join') return void handleJoin(req, res);
   if (path === '/_status') return handleStatus(req, res);
   if (path === '/_health') return json(res, 200, { ok: true }, req);
   handleProxy(req, res).catch((err: unknown) => {
@@ -320,7 +379,7 @@ server.on('upgrade', (req, socket, head) => {
 
   if (path === '/_agent') {
     const token = bearer(req.headers.authorization);
-    if (!token || !cfg.agentTokens.has(token)) {
+    if (!token || !(cfg.agentTokens.has(token) || enrolment.has(token))) {
       rejectUpgrade(socket, 401, 'Invalid agent token.');
       return;
     }
