@@ -79,11 +79,18 @@ class Agent {
   private backoffMs = 1000;
   private heartbeat: NodeJS.Timeout | null = null;
   private stopping = false;
+  /** Resolves once the first probe has run, so the broker stops guessing. */
+  private probed: Promise<void>;
+  private probedResolve!: () => void;
 
   constructor(
     private creds: Credentials,
     private manifest: AgentManifest,
-  ) {}
+  ) {
+    this.probed = new Promise((resolve) => {
+      this.probedResolve = resolve;
+    });
+  }
 
   start(): void {
     void this.healthLoop();
@@ -95,6 +102,7 @@ class Agent {
   private async healthLoop(): Promise<void> {
     while (!this.stopping) {
       this.states = await probeAll(this.manifest.environments);
+      this.probedResolve();
       await new Promise((r) => setTimeout(r, this.manifest.healthIntervalMs));
     }
   }
@@ -200,6 +208,13 @@ class Agent {
     };
     beat();
     this.heartbeat = setInterval(beat, intervalMs);
+    // The first beat can land before the first probe finishes, leaving the
+    // broker with no state at all — which it reads as "trust the declaration",
+    // so it may route to a dead app or route model-blind. Ping again the moment
+    // real state exists rather than waiting out a full heartbeat.
+    void this.probed.then(() => {
+      if (!this.stopping) beat();
+    });
   }
 
   /** Pipe one tunnelled request into the local app and stream the reply back. */

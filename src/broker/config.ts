@@ -21,6 +21,14 @@ export interface BrokerConfig {
   sessionHeader: string;
   sessionTtlMs: number;
   /**
+   * How long a request may wait for a busy pool before giving up with 503.
+   * Generous by default: a queued request is still cheaper for the caller than
+   * a bounce and a retry, and generation can legitimately take minutes.
+   */
+  queueTimeoutMs: number;
+  /** Parked requests per environment before new ones are refused outright. */
+  queueLimit: number;
+  /**
    * Origins allowed to call the broker from a browser. '*' allows any;
    * otherwise a comma-separated allowlist that is echoed back when matched.
    * Needed because an app key in browser JS is readable anyway, so the
@@ -72,6 +80,8 @@ export function loadConfig(path = 'broker.config.json'): BrokerConfig {
     requestTimeoutMs: Number(process.env.GPUPOOL_REQUEST_TIMEOUT_MS ?? 600_000),
     sessionHeader: (process.env.GPUPOOL_SESSION_HEADER ?? 'x-gpupool-session').toLowerCase(),
     sessionTtlMs: Number(process.env.GPUPOOL_SESSION_TTL_MS ?? 600_000),
+    queueTimeoutMs: Number(process.env.GPUPOOL_QUEUE_TIMEOUT_MS ?? 120_000),
+    queueLimit: Number(process.env.GPUPOOL_QUEUE_LIMIT ?? 100),
     corsOrigin: process.env.GPUPOOL_CORS_ORIGIN ?? file.corsOrigin ?? '*',
   };
 }

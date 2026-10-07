@@ -4,6 +4,6 @@ environments:
     port: 11434
     health: /api/tags
   imagegen:
-    port: 9999
+    port: 9997
     health: /healthz
 maxConcurrency: 4

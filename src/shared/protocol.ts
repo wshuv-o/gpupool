@@ -26,6 +26,18 @@ export interface EnvironmentState {
   ready: boolean;
   /** Populated when ready === false. */
   detail?: string;
+  /**
+   * Models the app says it can serve. Best effort: absent when the app exposes
+   * no inventory endpoint we recognise, which routing treats as "might have
+   * anything" rather than "has nothing".
+   */
+  models?: string[];
+  /**
+   * Models already resident in VRAM. Routing strongly prefers these — loading
+   * a 13 GB model costs tens of seconds, which dwarfs any queueing we might
+   * save by sending the request to a less busy machine.
+   */
+  loaded?: string[];
 }
 
 // ---------------------------------------------------------------- agent -> broker
@@ -173,6 +185,21 @@ export type BrokerFrame =
   | WsOpenFrame
   | WsDataFrame
   | WsCloseFrame;
+
+// ---------------------------------------------------------------- enrolment
+
+/** What POST /_invite returns to an admin. */
+export interface InviteResponse {
+  code: string;
+  expiresAt: number;
+}
+
+/** What POST /_join returns to a machine presenting a valid code. */
+export interface JoinResponse {
+  token: string;
+  agentId: string;
+  label: string;
+}
 
 // ---------------------------------------------------------------- helpers
 

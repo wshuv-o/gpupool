@@ -81,6 +81,25 @@ async function readBody(req: IncomingMessage, limit: number): Promise<Buffer | n
   return Buffer.concat(chunks);
 }
 
+/**
+ * Pull the model name out of a request body.
+ *
+ * Every OpenAI-compatible and Ollama endpoint carries it as a top-level
+ * "model" string. Anything else — form posts, uploads, malformed JSON — yields
+ * undefined and routing stays model-blind, exactly as it was before.
+ */
+function modelFromBody(body: Buffer): string | undefined {
+  if (body.length === 0 || body.length > 1024 * 1024) return undefined;
+  try {
+    const doc = JSON.parse(body.toString('utf8')) as unknown;
+    if (!doc || typeof doc !== 'object') return undefined;
+    const m = (doc as Record<string, unknown>).model;
+    return typeof m === 'string' && m.length > 0 ? m : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function handleProxy(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const key =
     bearer(req.headers.authorization) ?? (req.headers['x-gpupool-key'] as string | undefined);
@@ -95,28 +114,62 @@ async function handleProxy(req: IncomingMessage, res: ServerResponse): Promise<v
     return;
   }
 
-  const session = req.headers[cfg.sessionHeader] as string | undefined;
-  const agent = registry.pick(env, session);
-  if (!agent) {
-    const anyDeclared = registry.list().some((a) => a.hasEnvironment(env));
-    // Distinguish "all your machines are off" from "nobody serves this app at
-    // all" — the first is temporary, the second is a config mistake.
-    apiError(
-      res,
-      503,
-      anyDeclared
-        ? `No machine available for environment "${env}" right now. Try again later.`
-        : `No machine is serving environment "${env}". Check the agent gpupool.yaml.`,
-      'no_capacity',
-      req,
-    );
-    return;
-  }
-
+  // Read the body before routing: the model name lives in it, and routing to
+  // a machine that already holds that model saves a cold load worth far more
+  // than the buffering costs.
   const body = await readBody(req, cfg.maxBodyBytes);
   if (body === null) {
     apiError(res, 413, 'Request body too large.', 'body_too_large', req);
     return;
+  }
+
+  const session = req.headers[cfg.sessionHeader] as string | undefined;
+  const model = modelFromBody(body);
+
+  let agent = registry.pick(env, session, model);
+  if (!agent) {
+    if (!registry.servesEnvironment(env)) {
+      // Nobody serves this at all: queueing would only stall the caller.
+      apiError(
+        res,
+        503,
+        `No machine is serving environment "${env}". Check the agent gpupool.yaml.`,
+        'no_capacity',
+        req,
+      );
+      return;
+    }
+    if (registry.queueDepth(env) >= cfg.queueLimit) {
+      apiError(
+        res,
+        503,
+        `Too many requests queued for environment "${env}". Try again later.`,
+        'queue_full',
+        req,
+      );
+      return;
+    }
+    // Every machine is busy. Hold the request instead of bouncing it: the
+    // caller would only retry, and a retry storm is worse than a queue.
+    const waited = Date.now();
+    agent = await registry.enqueue(env, model, session, cfg.queueTimeoutMs);
+    if (!agent) {
+      apiError(
+        res,
+        503,
+        `No machine available for environment "${env}" right now. Try again later.`,
+        'no_capacity',
+        req,
+      );
+      return;
+    }
+    // The client may have hung up while parked; dispatching now would occupy a
+    // GPU producing a response nobody will read.
+    if (res.writableEnded || res.destroyed) {
+      registry.drain();
+      return;
+    }
+    log(`queued ${Date.now() - waited}ms [${env}] -> ${agent.label}`);
   }
 
   const id = randomUUID();
@@ -143,6 +196,7 @@ async function handleProxy(req: IncomingMessage, res: ServerResponse): Promise<v
           const p = agent.pending.get(id);
           if (!p) return;
           agent.pending.delete(id);
+          registry.drain();
           agent.send({ t: 'cancel', id });
           if (p.headersSent) p.res.destroy();
           else apiError(p.res, 504, 'Upstream agent timed out.', 'agent_timeout');
@@ -153,7 +207,10 @@ async function handleProxy(req: IncomingMessage, res: ServerResponse): Promise<v
     if (timer) clearTimeout(timer);
     // Client hung up before we finished: tell the agent to abort the local
     // request, so a cancelled chat stops occupying a GPU.
-    if (agent.pending.delete(id)) agent.send({ t: 'cancel', id });
+    if (agent.pending.delete(id)) {
+      registry.drain();
+      agent.send({ t: 'cancel', id });
+    }
   });
 
   agent.send({
@@ -189,10 +246,15 @@ function handleStatus(req: IncomingMessage, res: ServerResponse): void {
         name: e.name,
         port: e.port,
         ready: a.isReady(e.name),
+        // Surfacing inventory makes a routing decision explainable: you can
+        // see which machine held the model when a request landed where it did.
+        models: a.states.find((st) => st.name === e.name)?.models,
+        loaded: a.states.find((st) => st.name === e.name)?.loaded,
         detail: a.states.find((s) => s.name === e.name)?.detail,
       })),
     })),
     environments: Object.fromEntries(registry.readyEnvironments()),
+    queued: registry.queued,
     websockets: tunnels.size,
     stickySessions: registry.affinityCount,
   }, req);
@@ -363,6 +425,7 @@ function attachAgent(ws: WebSocket): void {
         Math.max(1, hello.maxConcurrency),
       );
       registry.add(agent);
+      registry.drain();
       ws.send(
         JSON.stringify({ t: 'welcome', v: PROTOCOL_VERSION, heartbeatMs: cfg.heartbeatMs }),
       );
@@ -379,6 +442,9 @@ function attachAgent(ws: WebSocket): void {
         agent.lastSeen = Date.now();
         agent.states = frame.states;
         ws.send(JSON.stringify({ t: 'pong' }));
+        // A machine whose app just came back, or that just loaded the model a
+        // waiter needs, is newly usable capacity.
+        registry.drain();
         break;
       }
       case 'res_head': {
@@ -409,6 +475,7 @@ function attachAgent(ws: WebSocket): void {
         const p = agent.pending.get(frame.id);
         if (!p) break;
         agent.pending.delete(frame.id);
+        registry.drain();
         p.res.end();
         log(`<- ${agent.label} ${frame.id.slice(0, 8)} ${Date.now() - p.startedAt}ms`);
         break;
@@ -417,6 +484,7 @@ function attachAgent(ws: WebSocket): void {
         const p = agent.pending.get(frame.id);
         if (!p) break;
         agent.pending.delete(frame.id);
+        registry.drain();
         if (p.headersSent) p.res.destroy();
         else apiError(p.res, 502, `Local app error: ${frame.message}`, 'upstream_error');
         break;

@@ -3,6 +3,10 @@
 import { createServer } from 'node:http';
 
 const port = Number(process.argv[2] ?? 9999);
+// Pretend to be an Ollama-ish server with an inventory, so model-aware routing
+// is testable without shipping gigabytes of weights into the test suite.
+const available = (process.argv[3] ?? '').split(',').filter(Boolean);
+const resident = (process.argv[4] ?? '').split(',').filter(Boolean);
 
 createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
@@ -28,6 +32,18 @@ createServer((req, res) => {
       }
     }, 60);
     req.on('close', () => clearInterval(timer));
+    return;
+  }
+
+  // Ollama's inventory shape, which the agent's health probe knows how to read.
+  if (url.pathname === '/api/tags') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ models: available.map((name) => ({ name })) }));
+    return;
+  }
+  if (url.pathname === '/api/ps') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ models: resident.map((name) => ({ name })) }));
     return;
   }
 
