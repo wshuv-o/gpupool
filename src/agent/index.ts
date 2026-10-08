@@ -477,18 +477,15 @@ async function cmdSetupRoot(): Promise<void> {
 
   process.stdout.write('looking for local AI servers... ');
   const found = await writeManifest(arg('manifest') ?? 'gpupool.yaml');
-  if (!found) {
+  if (found) {
+    console.log(`found ${found.length} — this machine will serve requests too.`);
+  } else {
+    // A root with no GPU is a normal arrangement, not an error: a small
+    // always-on box coordinating machines that do the actual work. Say which
+    // one happened rather than refusing to continue.
     console.log('none found.');
-    console.error(`
-Nothing is answering on the ports we know. Install and start one first:
-
-  winget install Ollama.Ollama
-  ollama pull llama3.2:3b
-
-then run this again.`);
-    process.exit(1);
+    console.log('this machine will coordinate only, and serve no requests itself.');
   }
-  console.log(`found ${found.length}.`);
 
   const addrs = lanAddresses();
   const lan = addrs[0] ?? '127.0.0.1';
@@ -500,6 +497,7 @@ root is configured.
   dashboard  http://${lan}:${port}/_ui
   admin key  ${config.adminKey}
   app key    ${config.appKey}
+  serves     ${found ? describe(found) : 'nothing locally — coordinates only'}
 
 Start it:
 
