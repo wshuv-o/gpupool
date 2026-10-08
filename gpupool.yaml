@@ -1,7 +1,0 @@
-# This machine: Ollama on its default port.
-environments:
-  chatapp:
-    port: 11434
-    health: /api/tags
-
-maxConcurrency: 4

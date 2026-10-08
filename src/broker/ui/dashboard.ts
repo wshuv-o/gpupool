@@ -133,6 +133,7 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
     </div>
     <div class="joincmd mono" id="joincmd"></div>
     <p class="sub" id="enrollNote"></p>
+    <p class="sub">Not set up yet? Send people the <a href="/install">setup sheet</a>: it says where to download gpupool and what to run.</p>
   </div>
 </main>
 

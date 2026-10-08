@@ -106,7 +106,11 @@ export async function writeManifest(manifestPath: string): Promise<EnvironmentDe
   if (existsSync(manifestPath)) {
     const { loadManifest } = await import('./config.js');
     try {
-      return loadManifest(manifestPath).environments;
+      const kept = loadManifest(manifestPath).environments;
+      // Detection is skipped for an existing file, so an old or copied one decides what this
+      // machine registers as. Say so, rather than let it look like this machine was inspected.
+      console.log(`\n(keeping your existing ${resolve(manifestPath)} - delete it to re-detect)`);
+      return kept;
     } catch {
       return null;
     }

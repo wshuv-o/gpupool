@@ -38,7 +38,7 @@
   "files": [
     "dist",
     "broker.config.example.json",
-    "gpupool.yaml"
+    "gpupool.example.yaml"
   ],
   "keywords": [
     "gpu",

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Join the GPU pool</title>
+<style>
+  :root { --bg:#fbfbfa; --fg:#1b1b1a; --muted:#6b6b66; --line:#e4e3df; --card:#fff; --code:#f2f1ee; --accent:#1f6feb; --warn:#9a5b00; --warnbg:#fff6e5; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --fg:#ecebe8; --muted:#9a9993; --line:#2c2c2a; --card:#1d1d1b; --code:#252523; --accent:#6ea8fe; --warn:#f0b35a; --warnbg:#2a2214; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 36px 0 8px; }
+  p, li { color: var(--fg); }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .step { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin:12px 0; }
+  .step h3 { margin:0 0 6px; font-size:16px; }
+  .n { display:inline-block; width:24px; height:24px; line-height:24px; text-align:center; border-radius:50%; background:var(--accent); color:#fff; font-size:13px; margin-right:8px; }
+  pre { background:var(--code); border-radius:8px; padding:12px; overflow-x:auto; margin:8px 0; font-size:14px; line-height:1.45; }
+  code { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:0.92em; }
+  :not(pre) > code { background:var(--code); padding:1px 5px; border-radius:4px; }
+  .warn { background:var(--warnbg); color:var(--warn); border-radius:8px; padding:10px 12px; margin:10px 0; font-size:15px; }
+  .tabs { display:flex; gap:8px; margin: 8px 0 0; flex-wrap:wrap; }
+  details { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 18px; margin:12px 0; }
+  summary { cursor:pointer; font-weight:600; }
+  a { color: var(--accent); }
+  table { border-collapse: collapse; width:100%; font-size:15px; }
+  td, th { text-align:left; border-bottom:1px solid var(--line); padding:6px 8px; vertical-align:top; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Join the GPU pool</h1>
+  <p class="sub">Add this machine's GPU to <strong>gpu.odinbd.com</strong>. About 5 minutes. Nothing is opened on your router or firewall: the machine dials out.</p>
+
+  <h2>Before you start</h2>
+  <ul>
+    <li>An AI server already running on this machine, for example <a href="https://ollama.com/download">Ollama</a>. Check it: open a terminal and run <code>ollama list</code>. You should see your models.</li>
+    <li>A <strong>setup key</strong> (starts with <code>ek_</code>). Ask whoever runs the pool for it. They find it on the dashboard at <a href="https://gpu.odinbd.com/_ui">/_ui</a>. Keep it private: anyone holding it can add a machine.</li>
+  </ul>
+
+  <h2>Quick way &middot; Windows, one command</h2>
+  <div class="step">
+    <p>Open <strong>PowerShell</strong> and paste this, with your setup key and a name for this PC. It checks Node, Git and Ollama, installs the agent, joins the pool and keeps it running after reboots. If something is missing it stops and says exactly what to install.</p>
+<pre><code>$env:GPU_KEY='ek_...'; $env:GPU_LABEL='my-pc'; irm https://gpu.odinbd.com/install.ps1 | iex</code></pre>
+    <p>Use a different <code>GPU_LABEL</code> on each PC. You can run it again at any time to repair or update.</p>
+  </div>
+
+  <p class="sub">The two options below do the same thing by hand, for other systems or if you prefer to see each step.</p>
+
+  <h2>Option A &middot; Windows program</h2>
+
+  <div class="step"><h3><span class="n">1</span>Download</h3>
+    <p>Open <strong>PowerShell</strong> and run:</p>
+<pre><code>mkdir $env:USERPROFILE\gpupool -Force; cd $env:USERPROFILE\gpupool
+Invoke-WebRequest https://github.com/wshuv-o/gpupool/releases/latest/download/gpupool.exe -OutFile gpupool.exe
+Unblock-File .\gpupool.exe</code></pre>
+    <p>The file is about 90 MB.</p>
+  </div>
+
+  <div class="step"><h3><span class="n">2</span>Check it is the right version</h3>
+<pre><code>.\gpupool.exe</code></pre>
+    <p>The help text must list this line: <code>gpupool setup leaf --key ...</code></p>
+    <div class="warn"><strong>If that line is missing</strong>, the download is an older version. Use <a href="#nodepath">Option B</a> below instead.</div>
+    <div class="warn"><strong>If Windows says "An Application Control policy has blocked this file"</strong>, that is Smart App Control. It cannot be allowed for one app. Do not turn it off (it can only be turned back on by reinstalling Windows). Use <a href="#nodepath">Option B</a> instead.</div>
+  </div>
+
+  <div class="step"><h3><span class="n">3</span>Join</h3>
+    <p>Replace <code>ek_...</code> with your setup key and pick a name for this machine:</p>
+<pre><code>.\gpupool.exe setup leaf --key ek_... --root https://gpu.odinbd.com --label my-pc</code></pre>
+    <p>It finds Ollama and your models by itself and connects. Use a different <code>--label</code> on each machine.</p>
+  </div>
+
+  <div class="step"><h3><span class="n">4</span>Keep it running after reboots</h3>
+<pre><code>.\gpupool.exe service install</code></pre>
+    <p>This starts it each time you log in, with no admin rights needed. Add <code>--system</code> (from an Administrator PowerShell) to start it at boot before login.</p>
+  </div>
+
+  <div class="step"><h3><span class="n">5</span>Check it worked</h3>
+    <p>The machine should appear on <a href="https://gpu.odinbd.com/_ui">the dashboard</a> with a green dot and your model names. If you don't have the admin key, ask the pool owner to look.</p>
+  </div>
+
+  <h2 id="nodepath">Option B &middot; From source (Windows, macOS, Linux)</h2>
+  <p>Use this if Option A is blocked or out of date. You need <a href="https://nodejs.org/en/download">Node.js 20 or newer</a> and <a href="https://git-scm.com/downloads">Git</a>.</p>
+  <div class="step">
+<pre><code>git clone https://github.com/wshuv-o/gpupool.git
+cd gpupool
+npm ci
+npm run build
+rm gpupool.yaml
+node dist/agent/index.js setup leaf --key ek_... --root https://gpu.odinbd.com --label my-pc
+node dist/agent/index.js service install</code></pre>
+    <div class="warn"><strong>Don't skip <code>rm gpupool.yaml</code></strong> (in PowerShell: <code>Remove-Item gpupool.yaml</code>). The download contains a sample file with that name, and setup leaves an existing file alone, so the machine would join under the wrong name and never receive requests. Setup writes a correct one for your machine.</div>
+    <p>On Windows, use <code>node dist\agent\index.js</code> if the slashes give you trouble. To update later: <code>git pull</code>, <code>npm ci</code>, <code>npm run build</code>.</p>
+  </div>
+
+  <h2>If something goes wrong</h2>
+  <table>
+    <tr><th>You see</th><th>Likely cause</th></tr>
+    <tr><td>"setup key may be wrong, or enrollment closed"</td><td>Typo in the key, or the pool owner closed enrollment. Ask for the current key.</td></tr>
+    <tr><td>"Too many failed attempts"</td><td>Repeated wrong keys from your network. Wait 15 minutes.</td></tr>
+    <tr><td>Machine joins as <code>chatapp</code>, or requests never reach it</td><td>The sample <code>gpupool.yaml</code> was kept. Delete it and run <code>setup leaf</code> again.</td></tr>
+    <tr><td>Machine joins but shows no models</td><td>Ollama isn't running. Start it, then run <code>ollama list</code>.</td></tr>
+    <tr><td><code>setup leaf</code> not recognised</td><td>Old download. Use Option B.</td></tr>
+    <tr><td>Can't reach gpu.odinbd.com</td><td>Check your internet. Open <a href="https://gpu.odinbd.com/_health">/_health</a>; it should say <code>{"ok":true}</code>.</td></tr>
+  </table>
+</main>
+</body>
+</html>

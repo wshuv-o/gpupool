@@ -1,0 +1,9 @@
+# EXAMPLE ONLY - the agent never reads this file. `gpupool setup leaf` / `gpupool join` write the real
+# gpupool.yaml for your machine from what is actually running. Copy this to gpupool.yaml only to hand-write one.
+# This machine: Ollama on its default port.
+environments:
+  chatapp:
+    port: 11434
+    health: /api/tags
+
+maxConcurrency: 4

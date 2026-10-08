@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU pool test</title>
+<style>
+  :root { --bg:#fbfbfa; --fg:#1b1b1a; --muted:#6b6b66; --line:#e4e3df; --card:#fff; --code:#f2f1ee; --accent:#1f6feb; --ok:#1a7f37; --bad:#c62828; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --fg:#ecebe8; --muted:#9a9993; --line:#2c2c2a; --card:#1d1d1b; --code:#252523; --accent:#6ea8fe; --ok:#56d364; --bad:#ff7b72; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 2px; }
+  h2 { font-size: 13px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin: 28px 0 8px; font-weight:600; }
+  .sub { color: var(--muted); margin: 0 0 18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  label { display:block; font-size:13px; color:var(--muted); margin: 10px 0 4px; }
+  input, textarea, button { font: inherit; color: inherit; }
+  input, textarea { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+  textarea { min-height: 84px; resize: vertical; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; }
+  .row > * { flex:1 1 200px; }
+  button { padding:8px 14px; border:1px solid var(--line); border-radius:8px; background:var(--card); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  .pill { display:inline-block; margin:2px 4px 2px 0; padding:2px 9px; border:1px solid var(--line); border-radius:99px; background:var(--code); font:12.5px ui-monospace,Menlo,Consolas,monospace; cursor:pointer; }
+  .pill:hover { border-color: var(--accent); }
+  table { width:100%; border-collapse:collapse; }
+  td, th { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; font-size:14px; }
+  th { color:var(--muted); font-weight:500; font-size:13px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; background:var(--bad); }
+  .dot.ok { background:var(--ok); }
+  #out { white-space:pre-wrap; word-break:break-word; min-height:90px; background:var(--code); border-radius:8px; padding:12px; margin-top:10px; font-family: ui-monospace,Menlo,Consolas,monospace; font-size:13.5px; }
+  #think { color:var(--muted); font-style:italic; }
+  #stats { margin-top:8px; color:var(--muted); font-size:13.5px; }
+  #verdict { margin-top:6px; font-weight:600; }
+  .good { color: var(--ok); } .badtxt { color: var(--bad); }
+  .hint { color:var(--muted); font-size:13px; margin-top:6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>GPU pool test</h1>
+  <p class="sub">Send a prompt through <strong id="host"></strong> and see which GPU answers.</p>
+
+  <h2>Keys</h2>
+  <div class="card">
+    <div class="row">
+      <div><label for="appKey">App key (<code>pk_...</code>) - required</label><input id="appKey" type="password" autocomplete="off" placeholder="pk_..."></div>
+      <div><label for="adminKey">Admin key - optional, shows which machine answered</label><input id="adminKey" type="password" autocomplete="off" placeholder="admin_..."></div>
+    </div>
+    <div class="hint">Kept only in this browser tab (cleared when you close it). Sent only to this site.</div>
+    <div style="margin-top:10px"><button id="loadBtn">Load machines</button></div>
+  </div>
+
+  <h2>Machines</h2>
+  <div class="card" id="machines"><span class="sub">Enter the admin key and press "Load machines" to list each GPU and its models. Click a model to use it.</span></div>
+
+  <h2>Try it</h2>
+  <div class="card">
+    <div class="row">
+      <div><label for="model">Model (decides which machine answers)</label><input id="model" list="models" placeholder="llama3.2:3b"><datalist id="models"></datalist></div>
+      <div style="flex:0 1 150px"><label for="maxTok">Max tokens</label><input id="maxTok" type="number" value="300" min="1" max="4000"></div>
+    </div>
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt">Explain in two sentences why the sky is blue.</textarea>
+    <div style="margin-top:10px" class="row">
+      <button class="primary" id="sendBtn" style="flex:0 0 auto">Send</button>
+      <button id="stopBtn" style="flex:0 0 auto" disabled>Stop</button>
+    </div>
+    <div id="out"></div>
+    <div id="stats"></div>
+    <div id="verdict"></div>
+  </div>
+</main>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var store = {
+    get: function (k) { try { return sessionStorage.getItem(k) || ''; } catch (e) { return ''; } },
+    set: function (k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} }
+  };
+  $('host').textContent = location.host;
+  $('appKey').value = store.get('gp_app');
+  $('adminKey').value = store.get('gp_admin');
+  $('appKey').addEventListener('input', function () { store.set('gp_app', this.value.trim()); });
+  $('adminKey').addEventListener('input', function () { store.set('gp_admin', this.value.trim()); });
+
+  function adminHeaders() { return { 'Authorization': 'Bearer ' + $('adminKey').value.trim() }; }
+  function status() {
+    return fetch('/_status', { headers: adminHeaders(), cache: 'no-store' }).then(function (r) {
+      if (r.status === 401) throw new Error('Admin key rejected');
+      if (r.status === 429) throw new Error('Too many wrong keys - wait a few minutes');
+      if (!r.ok) throw new Error('Status HTTP ' + r.status);
+      return r.json();
+    });
+  }
+  function servedMap(st) { var m = {}; st.agents.forEach(function (a) { m[a.label] = a.served; }); return m; }
+
+  function renderMachines(st) {
+    var box = $('machines'); box.textContent = '';
+    var dl = $('models'); dl.textContent = '';
+    if (!st.agents.length) { box.textContent = 'No machines connected.'; return; }
+    var t = document.createElement('table');
+    t.innerHTML = '<tr><th>Machine</th><th>Models</th><th>Load</th></tr>';
+    st.agents.forEach(function (a) {
+      var tr = document.createElement('tr');
+      var c1 = document.createElement('td'), c2 = document.createElement('td'), c3 = document.createElement('td');
+      var ready = a.environments.some(function (e) { return e.ready; });
+      var dot = document.createElement('span'); dot.className = 'dot' + (ready ? ' ok' : '');
+      c1.appendChild(dot); c1.appendChild(document.createTextNode(a.label));
+      a.environments.forEach(function (e) {
+        (e.models || []).forEach(function (m) {
+          var p = document.createElement('span'); p.className = 'pill'; p.textContent = m;
+          p.onclick = function () { $('model').value = m; };
+          c2.appendChild(p);
+          var o = document.createElement('option'); o.value = m; dl.appendChild(o);
+        });
+      });
+      c3.textContent = a.activeJobs + ' / ' + a.maxConcurrency;
+      tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); t.appendChild(tr);
+    });
+    box.appendChild(t);
+  }
+
+  function loadMachines() {
+    if (!$('adminKey').value.trim()) { $('machines').textContent = 'Enter the admin key first.'; return Promise.resolve(); }
+    $('machines').textContent = 'Loading...';
+    return status().then(renderMachines).catch(function (e) { $('machines').textContent = e.message; });
+  }
+  $('loadBtn').onclick = loadMachines;
+  if ($('adminKey').value) loadMachines();
+
+  var controller = null;
+  $('stopBtn').onclick = function () { if (controller) controller.abort(); };
+
+  $('sendBtn').onclick = function () {
+    var key = $('appKey').value.trim(), model = $('model').value.trim();
+    var out = $('out'), stats = $('stats'), verdict = $('verdict');
+    out.textContent = ''; stats.textContent = ''; verdict.textContent = ''; verdict.className = '';
+    if (!key) { out.textContent = 'Enter the app key first.'; return; }
+    if (!model) { out.textContent = 'Enter a model name (click one from the list above).'; return; }
+
+    var think = document.createElement('span'); think.id = 'think';
+    var answer = document.createElement('span');
+    out.appendChild(think); out.appendChild(answer);
+
+    controller = new AbortController();
+    $('sendBtn').disabled = true; $('stopBtn').disabled = false;
+    var hasAdmin = !!$('adminKey').value.trim();
+    var before = hasAdmin ? status().then(servedMap).catch(function () { return null; }) : Promise.resolve(null);
+
+    var t0 = performance.now(), first = null, chunks = 0, last = 0;
+    before.then(function (b0) {
+      t0 = performance.now();
+      return fetch('/api/generate', {
+        method: 'POST', signal: controller.signal,
+        headers: { 'x-gpupool-key': key, 'content-type': 'application/json' },
+        body: JSON.stringify({ model: model, prompt: $('prompt').value, stream: true,
+                               options: { num_predict: parseInt($('maxTok').value, 10) || 300 } })
+      }).then(function (res) {
+        if (!res.ok) {
+          return res.text().then(function (t) {
+            var msg = t; try { msg = JSON.parse(t).error.message || t; } catch (e) {}
+            throw new Error('HTTP ' + res.status + ' - ' + msg);
+          });
+        }
+        var reader = res.body.getReader(), dec = new TextDecoder(), buf = '';
+        function pump() {
+          return reader.read().then(function (r) {
+            if (r.done) return;
+            buf += dec.decode(r.value, { stream: true });
+            var lines = buf.split('\n'); buf = lines.pop();
+            lines.forEach(function (ln) {
+              ln = ln.trim(); if (!ln) return;
+              var d; try { d = JSON.parse(ln); } catch (e) { return; }
+              if (d.error) throw new Error(d.error);
+              chunks++; last = performance.now() - t0;
+              if (first === null) first = last;
+              if (d.thinking) think.textContent += d.thinking;
+              if (d.response) answer.textContent += d.response;
+            });
+            return pump();
+          });
+        }
+        return pump();
+      }).then(function () { return b0; });
+    }).then(function (b0) {
+      stats.textContent = chunks + ' chunks - first token ' + (first / 1000).toFixed(2) + 's - total ' +
+        (last / 1000).toFixed(2) + 's' + (last > first ? ' - ' + (chunks / ((last - first) / 1000)).toFixed(0) + ' chunks/s' : '');
+      if (!answer.textContent && think.textContent) answer.textContent = '(the model spent all its tokens thinking - raise Max tokens)';
+      if (b0 && hasAdmin) {
+        return new Promise(function (r) { setTimeout(r, 1200); }).then(status).then(servedMap).then(function (b1) {
+          var who = Object.keys(b1).filter(function (n) { return b1[n] > (b0[n] || 0); });
+          verdict.textContent = who.length ? 'Answered by: ' + who.join(', ') : 'Could not tell which machine answered';
+          verdict.className = who.length ? 'good' : '';
+        });
+      }
+      verdict.textContent = hasAdmin ? '' : 'Add the admin key to see which machine answered.';
+    }).catch(function (e) {
+      if (e.name === 'AbortError') { stats.textContent = 'Stopped.'; return; }
+      verdict.textContent = 'Failed: ' + e.message; verdict.className = 'badtxt';
+    }).then(function () { $('sendBtn').disabled = false; $('stopBtn').disabled = true; controller = null; });
+  };
+})();
+</script>
+</body>
+</html>
