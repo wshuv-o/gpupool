@@ -27,7 +27,7 @@ const ADMIN_KEY = 'admin_local_dev';
 
 const BROKER_ENV = {
   PORT: '8787',
-  GPUPOOL_TOKEN_STORE: 'test/.tokens.json',
+  GPUPOOL_TOKEN_STORE: '.tokens.json',
   GPUPOOL_AGENT_TOKENS: Object.values(AGENT_TOKENS).join(','),
   GPUPOOL_APP_KEYS: JSON.stringify(APP_KEYS),
   GPUPOOL_ADMIN_KEY: ADMIN_KEY,
@@ -48,9 +48,9 @@ function pair(dir, token, label) {
   return home;
 }
 
-function start(name, cmd, args, env = {}) {
+function start(name, cmd, args, env = {}, cwd = ROOT) {
   const p = spawn(cmd, args, {
-    cwd: ROOT,
+    cwd,
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -112,7 +112,10 @@ try {
   const homeB = pair('machineB', AGENT_TOKENS.B, 'home-4070');
 
   console.log('--- bringing up pool ---');
-  start('broker', process.execPath, ['dist/broker/index.js'], BROKER_ENV);
+  // Run the broker from test/, which has no broker.config.json. Started from
+  // the repo root it would read the developer's real one, and a real agent
+  // running on this machine would then authenticate against the test broker.
+  start('broker', process.execPath, [join(ROOT, 'dist/broker/index.js')], BROKER_ENV, join(ROOT, 'test'));
   // Machine A holds "shared" and has "warm" resident; machine B holds "shared"
   // and "cold" but has nothing loaded. That asymmetry is what the routing
   // tests below read.
@@ -302,6 +305,60 @@ try {
     }),
   });
   record('a code survives being retyped with dashes and lower case', retyped.status === 200);
+
+  // 3f. setup keys --------------------------------------------------------
+  // A reusable key is how people actually install things across machines; the
+  // ten-minute one-shot code is for handing to someone else.
+  const enr = await fetch('http://127.0.0.1:8787/_enrollment', {
+    headers: { authorization: `Bearer ${ADMIN_KEY}` },
+  }).then((r) => r.json());
+
+  const joinWith = (code, who) =>
+    fetch('http://127.0.0.1:8787/_join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, label: who, agentId: `ag_${who}` }),
+    });
+
+  const first = await joinWith(enr.key, 'setup_a');
+  const second = await joinWith(enr.key, 'setup_b');
+  record(
+    'one setup key enrolls several machines',
+    enr.key.startsWith('ek_') && first.status === 200 && second.status === 200,
+  );
+
+  // Closing it must not disturb machines that already joined.
+  await fetch('http://127.0.0.1:8787/_enrollment', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${ADMIN_KEY}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ open: false }),
+  });
+  const afterClose = await joinWith(enr.key, 'setup_c');
+  const stillUp = (await status()).agents.length;
+  record(
+    'closing enrollment refuses new machines but keeps existing ones',
+    afterClose.status === 401 && stillUp === 2,
+  );
+
+  // Rotating must invalidate the old key.
+  await fetch('http://127.0.0.1:8787/_enrollment', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${ADMIN_KEY}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ open: true, rotate: true }),
+  });
+  const withOld = await joinWith(enr.key, 'setup_d');
+  record('rotating the setup key invalidates the old one', withOld.status === 401);
+
+  // 3g. dashboard ----------------------------------------------------------
+  const ui = await fetch('http://127.0.0.1:8787/_ui');
+  const uiBody = await ui.text();
+  record(
+    'the dashboard is served and carries no credentials of its own',
+    ui.ok &&
+      uiBody.includes('gpupool') &&
+      !uiBody.includes(ADMIN_KEY) &&
+      ui.headers.get('content-type').includes('text/html'),
+  );
 
   // 4. streaming -------------------------------------------------------
   // Deterministic source, so this measures the tunnel and not model health.

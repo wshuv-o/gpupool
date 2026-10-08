@@ -6,6 +6,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { loadConfig, bearer } from './config.js';
 import { Enrolment, normalise } from './enrol.js';
 import { AuthLimiter, clientIp, safeEqual } from './security.js';
+import { DASHBOARD_HTML } from './ui/dashboard.js';
 import { AgentConn, Registry } from './registry.js';
 import {
   PROTOCOL_VERSION,
@@ -315,7 +316,12 @@ async function handleJoin(req: IncomingMessage, res: ServerResponse): Promise<vo
   }
 
   const label = (doc.label ?? 'unnamed').slice(0, 64);
-  const granted = enrolment.redeem(doc.code, label, doc.agentId.slice(0, 64));
+  const agentId = doc.agentId.slice(0, 64);
+  // A setup key and an invite code arrive through the same door, because the
+  // machine joining does not care which one it was handed.
+  const granted = doc.code.startsWith('ek_')
+    ? enrolment.redeemEnrollment(doc.code, label, agentId)
+    : enrolment.redeem(doc.code, label, agentId);
   if (!granted) {
     // One message for unknown, expired and already-used: distinguishing them
     // would let someone probe which codes exist. Rate limiting is what makes
@@ -328,6 +334,45 @@ async function handleJoin(req: IncomingMessage, res: ServerResponse): Promise<vo
   limiter.succeed(clientIp(req, cfg.trustedProxyHops));
   log(`machine "${label}" enrolled via invite (${normalise(doc.code)})`);
   json(res, 200, { token: granted.token, agentId: granted.agentId, label }, req);
+}
+
+/** Read or change the reusable setup key. Admin-only, like /_invite. */
+async function handleEnrollment(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (rateLimited(req, res)) return;
+  if (!cfg.adminKey || !safeEqual(bearer(req.headers.authorization), cfg.adminKey)) {
+    authFailed(req, 'admin key');
+    apiError(res, 401, 'Admin key required.', 'invalid_key', req);
+    return;
+  }
+  limiter.succeed(clientIp(req, cfg.trustedProxyHops));
+
+  if (req.method === 'GET') {
+    json(res, 200, enrolment.enrollment(), req);
+    return;
+  }
+  if (req.method !== 'POST') {
+    apiError(res, 405, 'GET or POST.', 'method_not_allowed', req);
+    return;
+  }
+
+  const body = await readBody(req, 4096);
+  let doc: { open?: boolean; rotate?: boolean } = {};
+  try {
+    doc = body && body.length ? (JSON.parse(body.toString('utf8')) as typeof doc) : {};
+  } catch {
+    apiError(res, 400, 'Expected a JSON body.', 'bad_request', req);
+    return;
+  }
+
+  if (doc.rotate) {
+    enrolment.rotateEnrollment();
+    log('enrollment key rotated');
+  }
+  if (typeof doc.open === 'boolean') {
+    enrolment.setEnrollmentOpen(doc.open);
+    log(`enrollment ${doc.open ? 'opened' : 'closed'}`);
+  }
+  json(res, 200, enrolment.enrollment(), req);
 }
 
 function handleStatus(req: IncomingMessage, res: ServerResponse): void {
@@ -380,7 +425,24 @@ const server = createServer((req, res) => {
     return;
   }
 
+  if (path === '/_ui' || path === '/_ui/') {
+    // The page itself carries no secrets — it asks for the admin key and holds
+    // it in sessionStorage — so it needs no auth of its own. Every call it
+    // makes is authenticated individually.
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      // It only ever talks to its own origin, so forbid everything else.
+      'content-security-policy':
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'",
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+    });
+    res.end(DASHBOARD_HTML);
+    return;
+  }
   if (path === '/_invite') return handleInvite(req, res);
+  if (path === '/_enrollment') return void handleEnrollment(req, res);
   if (path === '/_join') return void handleJoin(req, res);
   if (path === '/_status') return handleStatus(req, res);
   if (path === '/_health') return json(res, 200, { ok: true }, req);
@@ -681,6 +743,7 @@ server.keepAliveTimeout = 65_000;
 
 server.listen(cfg.port, cfg.host, () => {
   log(`broker listening on ${cfg.host ?? '0.0.0.0'}:${cfg.port}`);
+  log(`  dashboard: http://127.0.0.1:${cfg.port}/_ui`);
   if (!cfg.host) {
     // Worth saying out loud: behind a TLS-terminating proxy this means the
     // broker is also reachable directly, in plaintext, on its own port.

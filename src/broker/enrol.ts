@@ -39,6 +39,16 @@ export interface GrantedToken {
 export class Enrolment {
   private invites = new Map<string, Invite>();
   private granted: GrantedToken[] = [];
+  /**
+   * A reusable key for setting a pool up, as opposed to one-shot invites.
+   *
+   * Handing the same key to every machine is how people actually install
+   * things, and ten-minute codes make that painful enough they end up pasted
+   * into chat anyway. This is the honest version: one key, as many machines as
+   * you like, and a switch to close it once they have all joined.
+   */
+  private enrollmentKey: string | null = null;
+  private enrollmentOpen = true;
 
   constructor(
     private storePath: string,
@@ -52,8 +62,12 @@ export class Enrolment {
     try {
       const doc = JSON.parse(readFileSync(this.storePath, 'utf8')) as {
         tokens?: GrantedToken[];
+        enrollmentKey?: string;
+        enrollmentOpen?: boolean;
       };
       this.granted = doc.tokens ?? [];
+      this.enrollmentKey = doc.enrollmentKey ?? null;
+      this.enrollmentOpen = doc.enrollmentOpen ?? true;
     } catch {
       // A corrupt store must not stop the broker from serving the machines
       // whose tokens live in the operator's config file.
@@ -65,7 +79,15 @@ export class Enrolment {
     mkdirSync(dirname(this.storePath), { recursive: true });
     writeFileSync(
       this.storePath,
-      JSON.stringify({ tokens: this.granted }, null, 2) + '\n',
+      JSON.stringify(
+        {
+          tokens: this.granted,
+          enrollmentKey: this.enrollmentKey,
+          enrollmentOpen: this.enrollmentOpen,
+        },
+        null,
+        2,
+      ) + '\n',
       // These are credentials: readable by the broker's user only.
       { mode: 0o600 },
     );
@@ -106,6 +128,53 @@ export class Enrolment {
     this.granted.push(token);
     this.persist();
     return token;
+  }
+
+  /** The pool's reusable setup key, minted on first use. */
+  enrollment(): { key: string; open: boolean } {
+    if (!this.enrollmentKey) {
+      // Longer than an invite code: it lives indefinitely, with no ten-minute
+      // window doing part of the work.
+      this.enrollmentKey = `ek_${randomBytes(20).toString('hex')}`;
+      this.persist();
+    }
+    return { key: this.enrollmentKey, open: this.enrollmentOpen };
+  }
+
+  /** Close the door without disconnecting machines that already joined. */
+  setEnrollmentOpen(open: boolean): void {
+    this.enrollmentOpen = open;
+    this.persist();
+  }
+
+  /** Issue a fresh key, invalidating the old one immediately. */
+  rotateEnrollment(): string {
+    this.enrollmentKey = `ek_${randomBytes(20).toString('hex')}`;
+    this.persist();
+    return this.enrollmentKey;
+  }
+
+  /**
+   * Redeem the reusable key. Kept separate from invite codes so the dashboard
+   * can close this path while one-shot invites still work.
+   */
+  redeemEnrollment(presented: string, label: string, agentId: string): GrantedToken | null {
+    if (!this.enrollmentOpen || !this.enrollmentKey) return null;
+    if (!constantTimeEquals(this.enrollmentKey, presented.trim())) return null;
+    const token: GrantedToken = {
+      token: `ag_${randomBytes(24).toString('hex')}`,
+      agentId,
+      label,
+      issuedAt: Date.now(),
+    };
+    this.granted.push(token);
+    this.persist();
+    return token;
+  }
+
+  /** Enrolled machines, without their tokens, for the dashboard. */
+  machines(): Omit<GrantedToken, 'token'>[] {
+    return this.granted.map(({ agentId, label, issuedAt }) => ({ agentId, label, issuedAt }));
   }
 
   /** Tokens issued at runtime, merged with the config file's on every check. */

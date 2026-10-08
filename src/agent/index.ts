@@ -17,6 +17,7 @@ import {
 } from './config.js';
 import { probeAll } from './health.js';
 import { detectEnvironments, renderManifest } from './detect.js';
+import { writeRootConfig, writeManifest, lanAddresses, rootDir } from './setup.js';
 import {
   installService,
   uninstallService,
@@ -447,6 +448,168 @@ Nothing is answering on the ports we know (Ollama, ComfyUI, A1111,
   console.log('\nnext: gpupool serve   (or: gpupool service install)');
 }
 
+async function cmdSetup(): Promise<void> {
+  const role = process.argv[3];
+  if (role === 'root') return cmdSetupRoot();
+  if (role === 'leaf') return cmdSetupLeaf();
+  console.error(`usage:
+  gpupool setup root [--port 8787] [--cors <origin>]
+  gpupool setup leaf --key <setup-key> --root <url> [--label <name>]`);
+  process.exit(1);
+}
+
+/**
+ * Turn this machine into the pool's root: it runs the broker AND contributes
+ * its own GPU, which is what people expect from "set this one up first".
+ */
+async function cmdSetupRoot(): Promise<void> {
+  const port = Number(arg('port') ?? 8787);
+  const { config, created } = writeRootConfig({
+    port,
+    environment: 'ollama',
+    corsOrigin: arg('cors') ?? '*',
+  });
+
+  if (!created) {
+    console.log(`already set up as root; reusing ${rootDir()}`);
+    console.log('(delete that directory to start over — it would orphan joined machines)');
+  }
+
+  process.stdout.write('looking for local AI servers... ');
+  const found = await writeManifest(arg('manifest') ?? 'gpupool.yaml');
+  if (!found) {
+    console.log('none found.');
+    console.error(`
+Nothing is answering on the ports we know. Install and start one first:
+
+  winget install Ollama.Ollama
+  ollama pull llama3.2:3b
+
+then run this again.`);
+    process.exit(1);
+  }
+  console.log(`found ${found.length}.`);
+
+  const addrs = lanAddresses();
+  const lan = addrs[0] ?? '127.0.0.1';
+
+  console.log(`
+root is configured.
+
+  config     ${rootDir()}
+  dashboard  http://${lan}:${port}/_ui
+  admin key  ${config.adminKey}
+  app key    ${config.appKey}
+
+Start it:
+
+  gpupool broker          (foreground)
+
+Then open the dashboard, sign in with the admin key, and copy the setup key
+it shows. On each other machine:
+
+  gpupool setup leaf --key <setup-key> --root http://${lan}:${port}
+`);
+  if (addrs.length > 1) {
+    console.log(`This machine has several addresses; leaves should use one they can reach:`);
+    for (const a of addrs) console.log(`  http://${a}:${port}`);
+    console.log('');
+  }
+}
+
+/** Join an existing root using the key its dashboard shows. */
+async function cmdSetupLeaf(): Promise<void> {
+  const setupKey = arg('key');
+  const root = arg('root');
+  if (!setupKey || !root) {
+    console.error('usage: gpupool setup leaf --key <setup-key> --root <url> [--label <name>]');
+    process.exit(1);
+  }
+
+  const existing = loadCredentials();
+  const agentId = existing?.agentId ?? newAgentId();
+  const label = arg('label') ?? existing?.label ?? defaultLabel();
+  const base = root.replace(/\/+$/, '');
+
+  process.stdout.write(`joining ${base}... `);
+  let res: Response;
+  try {
+    res = await fetch(`${base}/_join`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: setupKey, label, agentId }),
+    });
+  } catch (err) {
+    console.log('failed.');
+    console.error(`
+Cannot reach ${base}: ${(err as Error).message}
+
+Check that the root is running, and that this machine can reach it:
+  curl ${base}/_health`);
+    process.exit(1);
+  }
+
+  if (!res.ok) {
+    console.log('refused.');
+    const detail = await res.text().catch(() => '');
+    let message = `HTTP ${res.status}`;
+    try {
+      const doc = JSON.parse(detail) as { error?: { message?: string } };
+      if (doc.error?.message) message = doc.error.message;
+    } catch {
+      /* status line is enough */
+    }
+    console.error(`
+${message}`);
+    if (res.status === 401) {
+      console.error('The setup key may be wrong, or enrollment closed on the dashboard.');
+    }
+    process.exit(1);
+  }
+
+  const granted = (await res.json()) as { token: string };
+  saveCredentials({ broker: base, token: granted.token, agentId, label });
+  console.log('done.');
+
+  process.stdout.write('looking for local AI servers... ');
+  const found = await writeManifest(arg('manifest') ?? 'gpupool.yaml');
+  if (!found) {
+    console.log('none found.');
+    console.error(`
+This machine joined, but has no AI server to share. Install one:
+
+  winget install Ollama.Ollama
+  ollama pull llama3.2:3b
+
+then run: gpupool service install
+(no new key needed — this machine is already enrolled)`);
+    process.exit(1);
+  }
+  console.log(`found ${found.length}.`);
+  console.log(`
+"${label}" joined the pool:
+  ${describe(found)}
+
+Keep it connected across reboots:
+
+  gpupool service install
+`);
+}
+
+/** Run the broker from the root's generated config. */
+function cmdBroker(): void {
+  const cfgPath = resolve(rootDir(), 'broker.config.json');
+  if (!existsSync(cfgPath)) {
+    console.error(`not set up as root. run:
+  gpupool setup root`);
+    process.exit(1);
+  }
+  // The broker reads ./broker.config.json, so run it from the root's directory
+  // rather than teaching it a second way to be configured.
+  process.chdir(rootDir());
+  void import('../broker/index.js');
+}
+
 function cmdServe(): void {
   const creds = loadCredentials();
   if (!creds) {
@@ -597,6 +760,12 @@ switch (command) {
   case 'join':
     void cmdJoin();
     break;
+  case 'setup':
+    void cmdSetup();
+    break;
+  case 'broker':
+    cmdBroker();
+    break;
   case 'serve':
     cmdServe();
     break;
@@ -608,6 +777,10 @@ switch (command) {
     break;
   default:
     console.log(`gpupool - expose a local port through a shared broker
+
+  gpupool setup root [--port 8787]
+  gpupool setup leaf --key <setup-key> --root <url> [--label <name>]
+  gpupool broker
 
   gpupool join <code> --broker <url> [--label <name>]
   gpupool login --broker <url> --token <token> [--label <name>]
