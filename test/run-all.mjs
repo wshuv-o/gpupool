@@ -25,8 +25,17 @@ const APP_KEYS = {
 };
 const ADMIN_KEY = 'admin_local_dev';
 
+/**
+ * Not 8787. A developer with a real pool running on the default port could not
+ * run the suite, and the failure looked like a broken test rather than a port
+ * clash.
+ */
+const PORT = Number(process.env.GPUPOOL_TEST_PORT ?? 8899);
+const BASE = `http://127.0.0.1:${PORT}`;
+const BASE_CTRL = `http://127.0.0.1:${PORT + 1}`;
+
 const BROKER_ENV = {
-  PORT: '8787',
+  PORT: String(PORT),
   GPUPOOL_TOKEN_STORE: '.tokens.json',
   GPUPOOL_AGENT_TOKENS: Object.values(AGENT_TOKENS).join(','),
   GPUPOOL_APP_KEYS: JSON.stringify(APP_KEYS),
@@ -40,7 +49,7 @@ function pair(dir, token, label) {
   writeFileSync(
     join(home, 'credentials.json'),
     JSON.stringify(
-      { broker: 'http://127.0.0.1:8787', token, agentId: `ag_test_${dir}`, label },
+      { broker: BASE, token, agentId: `ag_test_${dir}`, label },
       null,
       2,
     ),
@@ -87,7 +96,7 @@ async function waitFor(fn, label, timeoutMs = 20_000) {
 }
 
 async function status() {
-  const res = await fetch('http://127.0.0.1:8787/_status', {
+  const res = await fetch(`${BASE}/_status`, {
     headers: { authorization: 'Bearer admin_local_dev' },
   });
   if (!res.ok) throw new Error(`status ${res.status}`);
@@ -122,9 +131,9 @@ try {
   start('dummy', process.execPath, ['test/dummy-app.mjs', '9999', 'shared,warm', 'warm']);
   start('dummyB', process.execPath, ['test/dummy-app.mjs', '9997', 'shared,cold', '']);
   start('wsapp', process.execPath, ['test/ws-app.mjs', '9998']);
-  await waitFor(async () => (await fetch('http://127.0.0.1:8787/_health')).ok, 'broker');
+  await waitFor(async () => (await fetch(`${BASE}/_health`)).ok, 'broker');
 
-  start('agentA', process.execPath, ['dist/agent/index.js', 'serve', '--manifest', 'test/machineA.yaml', '--control', '9811'], {
+  start('agentA', process.execPath, ['dist/agent/index.js', 'serve', '--manifest', 'test/machineA.yaml', '--control', String(PORT + 1)], {
     GPUPOOL_HOME: homeA,
   });
   start('agentB', process.execPath, ['dist/agent/index.js', 'serve', '--manifest', 'test/machineB.yaml'], {
@@ -152,21 +161,21 @@ try {
   }
 
   // 1. plain proxy + byte fidelity -------------------------------------
-  const viaTunnel = await fetch('http://127.0.0.1:8787/api/tags', {
+  const viaTunnel = await fetch(`${BASE}/api/tags`, {
     headers: { authorization: 'Bearer pk_chatapp_4a91f0e2' },
   }).then((r) => r.text());
   const direct = await fetch('http://127.0.0.1:11434/api/tags').then((r) => r.text());
   record('payload byte-identical to a direct call', viaTunnel === direct);
 
   // 2. auth ------------------------------------------------------------
-  const noKey = await fetch('http://127.0.0.1:8787/api/tags');
-  const badKey = await fetch('http://127.0.0.1:8787/api/tags', {
+  const noKey = await fetch(`${BASE}/api/tags`);
+  const badKey = await fetch(`${BASE}/api/tags`, {
     headers: { authorization: 'Bearer nope' },
   });
   record('requests without a valid key are rejected', noKey.status === 401 && badKey.status === 401);
 
   // 3. environment isolation -------------------------------------------
-  const crossed = await fetch('http://127.0.0.1:8787/generate', {
+  const crossed = await fetch(`${BASE}/generate`, {
     headers: { authorization: 'Bearer pk_chatapp_4a91f0e2' },
   }).then((r) => r.text());
   record(
@@ -177,7 +186,7 @@ try {
   // 3b. browser headers --------------------------------------------------
   // A forwarded Origin makes Ollama answer 403, so every browser-originated
   // request fails. Assert the local app never sees it.
-  const seen = await fetch('http://127.0.0.1:8787/headers', {
+  const seen = await fetch(`${BASE}/headers`, {
     headers: {
       authorization: 'Bearer pk_imagegen_8d3b7e55',
       origin: 'https://example.github.io',
@@ -193,7 +202,7 @@ try {
   // 3c. model-aware routing ---------------------------------------------
   // "warm" is resident only on machine A (:9999). A cold load of a real model
   // costs tens of seconds, so it must win over plain least-busy.
-  const warm = await fetch('http://127.0.0.1:8787/', {
+  const warm = await fetch(`${BASE}/`, {
     method: 'POST',
     headers: {
       authorization: 'Bearer pk_imagegen_8d3b7e55',
@@ -205,7 +214,7 @@ try {
 
   // "cold" exists only on machine B (:9997), so it must go there even though
   // neither machine has it resident.
-  const cold = await fetch('http://127.0.0.1:8787/', {
+  const cold = await fetch(`${BASE}/`, {
     method: 'POST',
     headers: {
       authorization: 'Bearer pk_imagegen_8d3b7e55',
@@ -217,7 +226,7 @@ try {
 
   // An unknown model must still be served rather than refused: an inventory can
   // be stale, and a 404 from the app beats the broker inventing one.
-  const unknown = await fetch('http://127.0.0.1:8787/', {
+  const unknown = await fetch(`${BASE}/`, {
     method: 'POST',
     headers: {
       authorization: 'Bearer pk_imagegen_8d3b7e55',
@@ -233,7 +242,7 @@ try {
   // bounced with 503 — a bounced caller just retries, which is strictly worse.
   const hog = new AbortController();
   const hogs = Array.from({ length: 8 }, () =>
-    fetch('http://127.0.0.1:8787/sse?n=60', {
+    fetch(`${BASE}/sse?n=60`, {
       headers: { authorization: 'Bearer pk_imagegen_8d3b7e55' },
       signal: hog.signal,
     }).catch(() => null),
@@ -241,7 +250,7 @@ try {
   await new Promise((r) => setTimeout(r, 900)); // let them occupy slots
 
   const queuedAt = Date.now();
-  const overflow = fetch('http://127.0.0.1:8787/', {
+  const overflow = fetch(`${BASE}/`, {
     headers: { authorization: 'Bearer pk_imagegen_8d3b7e55' },
   });
   // While it waits, the broker should say so rather than hiding the backlog.
@@ -263,8 +272,8 @@ try {
   // 3e. enrolment --------------------------------------------------------
   // Adding a machine used to mean editing the broker's config and restarting
   // it, which drops every connected machine to admit one.
-  const noAuth = await fetch('http://127.0.0.1:8787/_invite', { method: 'POST' });
-  const invited = await fetch('http://127.0.0.1:8787/_invite', {
+  const noAuth = await fetch(`${BASE}/_invite`, { method: 'POST' });
+  const invited = await fetch(`${BASE}/_invite`, {
     method: 'POST',
     headers: { authorization: `Bearer ${ADMIN_KEY}` },
   }).then((r) => r.json());
@@ -273,14 +282,14 @@ try {
     noAuth.status === 401 && typeof invited.code === 'string' && invited.code.length === 8,
   );
 
-  const joined = await fetch('http://127.0.0.1:8787/_join', {
+  const joined = await fetch(`${BASE}/_join`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ code: invited.code, label: 'joiner', agentId: 'ag_joined' }),
   }).then((r) => r.json());
 
   // A code must not be reusable, or one leaked invite enrols a crowd.
-  const replay = await fetch('http://127.0.0.1:8787/_join', {
+  const replay = await fetch(`${BASE}/_join`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ code: invited.code, label: 'replay', agentId: 'ag_replay' }),
@@ -291,11 +300,11 @@ try {
   );
 
   // Lower case, spaces and dashes are how a human retypes a code off a screen.
-  const sloppy = await fetch('http://127.0.0.1:8787/_invite', {
+  const sloppy = await fetch(`${BASE}/_invite`, {
     method: 'POST',
     headers: { authorization: `Bearer ${ADMIN_KEY}` },
   }).then((r) => r.json());
-  const retyped = await fetch('http://127.0.0.1:8787/_join', {
+  const retyped = await fetch(`${BASE}/_join`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -309,12 +318,12 @@ try {
   // 3f. setup keys --------------------------------------------------------
   // A reusable key is how people actually install things across machines; the
   // ten-minute one-shot code is for handing to someone else.
-  const enr = await fetch('http://127.0.0.1:8787/_enrollment', {
+  const enr = await fetch(`${BASE}/_enrollment`, {
     headers: { authorization: `Bearer ${ADMIN_KEY}` },
   }).then((r) => r.json());
 
   const joinWith = (code, who) =>
-    fetch('http://127.0.0.1:8787/_join', {
+    fetch(`${BASE}/_join`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ code, label: who, agentId: `ag_${who}` }),
@@ -328,7 +337,7 @@ try {
   );
 
   // Closing it must not disturb machines that already joined.
-  await fetch('http://127.0.0.1:8787/_enrollment', {
+  await fetch(`${BASE}/_enrollment`, {
     method: 'POST',
     headers: { authorization: `Bearer ${ADMIN_KEY}`, 'content-type': 'application/json' },
     body: JSON.stringify({ open: false }),
@@ -341,7 +350,7 @@ try {
   );
 
   // Rotating must invalidate the old key.
-  await fetch('http://127.0.0.1:8787/_enrollment', {
+  await fetch(`${BASE}/_enrollment`, {
     method: 'POST',
     headers: { authorization: `Bearer ${ADMIN_KEY}`, 'content-type': 'application/json' },
     body: JSON.stringify({ open: true, rotate: true }),
@@ -350,7 +359,7 @@ try {
   record('rotating the setup key invalidates the old one', withOld.status === 401);
 
   // 3g. dashboard ----------------------------------------------------------
-  const ui = await fetch('http://127.0.0.1:8787/_ui');
+  const ui = await fetch(`${BASE}/_ui`);
   const uiBody = await ui.text();
   record(
     'the dashboard is served and carries no credentials of its own',
@@ -368,13 +377,13 @@ try {
   ).controlToken;
 
   const ctrl = (path, opts = {}) =>
-    fetch(`http://127.0.0.1:9811${path}`, {
+    fetch(`${BASE_CTRL}${path}`, {
       ...opts,
       headers: { ...(opts.headers || {}), authorization: `Bearer ${ctrlToken}` },
     });
 
   // Publishing a port must not be something the network can ask for.
-  const unauth = await fetch('http://127.0.0.1:9811/register', {
+  const unauth = await fetch(`${BASE_CTRL}/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ port: 9999 }),
@@ -393,7 +402,7 @@ try {
     return s2.agents.some((a) => a.environments.some((e) => e.name === 'job-xyz' && e.ready));
   }, 'the published port to appear in the pool');
 
-  const reached = await fetch('http://127.0.0.1:8787/', {
+  const reached = await fetch(`${BASE}/`, {
     headers: { authorization: `Bearer ${published.key}` },
   }).then((r) => r.json());
   record(
@@ -407,7 +416,7 @@ try {
     const s2 = await status();
     return !s2.agents.some((a) => a.environments.some((e) => e.name === 'job-xyz'));
   }, 'the published port to be withdrawn');
-  const afterWithdraw = await fetch('http://127.0.0.1:8787/', {
+  const afterWithdraw = await fetch(`${BASE}/`, {
     headers: { authorization: `Bearer ${published.key}` },
   });
   record('withdrawing a port revokes its key', afterWithdraw.status === 401);
@@ -417,7 +426,7 @@ try {
   // is connected rather than from a fixed list — and every service names the
   // key that reaches it, or a machine running something different is connected,
   // healthy and unreachable.
-  const rt = await fetch('http://127.0.0.1:8787/_routes', {
+  const rt = await fetch(`${BASE}/_routes`, {
     headers: { authorization: `Bearer ${ADMIN_KEY}` },
   }).then((r) => r.json());
 
@@ -431,17 +440,17 @@ try {
   // A key taken from /_routes must actually work, including for an environment
   // nobody configured a key for.
   const imagegen = rt.routes.find((r) => r.environment === 'imagegen');
-  const viaRouteKey = await fetch('http://127.0.0.1:8787/healthz', {
+  const viaRouteKey = await fetch(`${BASE}/healthz`, {
     headers: { authorization: `Bearer ${imagegen.key}` },
   });
   record('a key taken from the route list works', viaRouteKey.status === 200);
 
   // 4. streaming -------------------------------------------------------
   // Deterministic source, so this measures the tunnel and not model health.
-  record('SSE streams rather than buffers', await runScript('test/sse-test.mjs'));
+  record('SSE streams rather than buffers', await runScript('test/sse-test.mjs', [BASE]));
 
   // 4b. the same against the real LLM, when it happens to be healthy
-  const llmStream = await runScript('test/stream-test.mjs');
+  const llmStream = await runScript('test/stream-test.mjs', [`${BASE}/v1/chat/completions`]);
   if (!llmStream) {
     console.log('  (skipped: local Ollama is not serving; tunnel itself verified above)');
   } else {
@@ -449,10 +458,10 @@ try {
   }
 
   // 5. websockets ------------------------------------------------------
-  record('websocket tunnel relays both directions', await runScript('test/ws-test.mjs'));
+  record('websocket tunnel relays both directions', await runScript('test/ws-test.mjs', [`ws://127.0.0.1:${PORT}`]));
 
   // 6. sticky sessions -------------------------------------------------
-  record('session affinity overrides least-busy', await runScript('test/sticky-test.mjs'));
+  record('session affinity overrides least-busy', await runScript('test/sticky-test.mjs', [BASE]));
 
   // 7. failover --------------------------------------------------------
   console.log('--- killing machine A ---');
@@ -461,10 +470,10 @@ try {
 
   // imagegen runs on both machines, so it must survive; wsapp runs only on
   // machine A, so it must now be unavailable.
-  const shared = await fetch('http://127.0.0.1:8787/healthz', {
+  const shared = await fetch(`${BASE}/healthz`, {
     headers: { authorization: 'Bearer pk_imagegen_8d3b7e55' },
   });
-  const exclusive = await fetch('http://127.0.0.1:8787/healthz', {
+  const exclusive = await fetch(`${BASE}/healthz`, {
     headers: { authorization: 'Bearer pk_wsapp_6b2f9a07' },
   });
   record('environment on two machines survives losing one', shared.ok);
@@ -480,7 +489,7 @@ try {
     // Not just reconnected: its health probes must have reported in too.
     return s2.agents.length === 2 && s2.agents.some((a) => a.environments.some((e) => e.name === 'wsapp' && e.ready));
   }, 'machine A to rejoin');
-  const rejoined = await fetch('http://127.0.0.1:8787/healthz', {
+  const rejoined = await fetch(`${BASE}/healthz`, {
     headers: { authorization: 'Bearer pk_wsapp_6b2f9a07' },
   });
   record('a machine that comes back rejoins on its own', rejoined.ok);

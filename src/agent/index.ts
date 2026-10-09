@@ -565,6 +565,18 @@ async function cmdSetupRoot(): Promise<void> {
   const addrs = lanAddresses();
   const lan = addrs[0] ?? '127.0.0.1';
 
+  // Pair this machine with its own broker, so the machine coordinating the
+  // pool is not the one machine missing from it.
+  if (found && config.selfToken) {
+    const existing = loadCredentials();
+    saveCredentials({
+      broker: `http://127.0.0.1:${port}`,
+      token: config.selfToken,
+      agentId: existing?.agentId ?? newAgentId(),
+      label: arg('label') ?? existing?.label ?? defaultLabel(),
+    });
+  }
+
   const keyLines = Object.entries(config.appKeys)
     .map(([env, k]) => `               ${env.padEnd(16)} ${k}`)
     .join('\n');
@@ -581,9 +593,11 @@ root is configured.
              reachable:
 ${keyLines}
 
-Start it:
+Start it — the broker, and this machine's own agent:
 
   gpupool broker          (foreground)
+  gpupool serve           (second terminal)
+  gpupool service install (keeps the agent running across reboots)
 
 Then open the dashboard, sign in with the admin key, and copy the setup key
 it shows. On each other machine:

@@ -18,6 +18,12 @@ import type { EnvironmentDecl } from '../shared/protocol.js';
 export interface RootConfig {
   port: number;
   adminKey: string;
+  /**
+   * Token the root's own agent uses to connect to its own broker. Written at
+   * setup because a root that runs a GPU should contribute it — otherwise the
+   * machine coordinating the pool is the one machine not in it.
+   */
+  selfToken: string;
   /** environment name -> app key. One per service, not one per pool. */
   appKeys: Record<string, string>;
   dir: string;
@@ -60,6 +66,7 @@ export function writeRootConfig(opts: {
       port?: number;
       adminKey?: string;
       appKeys?: Record<string, string>;
+      agentTokens?: string[];
     };
     const appKeys: Record<string, string> = {};
     for (const [k, env] of Object.entries(existing.appKeys ?? {})) appKeys[env] = k;
@@ -68,6 +75,7 @@ export function writeRootConfig(opts: {
       config: {
         port: existing.port ?? opts.port,
         adminKey: existing.adminKey ?? '',
+        selfToken: (existing.agentTokens ?? [])[0] ?? '',
         appKeys,
         dir,
       },
@@ -82,6 +90,7 @@ export function writeRootConfig(opts: {
   const config: RootConfig = {
     port: opts.port,
     adminKey: key('admin'),
+    selfToken: key('ag', 24),
     appKeys,
     dir,
   };
@@ -96,6 +105,7 @@ export function writeRootConfig(opts: {
         // it. A root exposed to the internet should sit behind a reverse proxy
         // and set host to 127.0.0.1 — see deploy/.
         adminKey: config.adminKey,
+        agentTokens: [config.selfToken],
         // Stored key -> environment, which is what the broker reads.
         appKeys: Object.fromEntries(
           Object.entries(config.appKeys).map(([env, k]) => [k, env]),
