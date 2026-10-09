@@ -29,6 +29,47 @@ Only the broker needs hosting. It is a small stateful Node service that relays
 bytes and never computes, so the smallest instance your platform sells is
 enough.
 
+## Windows will warn about the binary
+
+`gpupool.exe` is unsigned. Code-signing certificates cost a few hundred a year
+and are tied to a legal identity, which is a poor fit for something you build
+from this repo. The consequence is two different warnings, and they are not
+the same problem.
+
+**SmartScreen — "Windows protected your PC".** Annoying, bypassable:
+
+```powershell
+Unblock-File .\gpupool.exe
+```
+
+or More info -> Run anyway. This is the mark-of-the-web flag on a downloaded
+file, and removing it is enough.
+
+**Smart App Control — "An Application Control policy has blocked this file".**
+Different, and it cannot be bypassed per-application. It only turns off
+entirely, and once off it cannot be turned back on without reinstalling
+Windows. Do not disable it for this.
+
+If you hit that one, run the agent from source instead:
+
+```powershell
+winget install OpenJS.NodeJS.LTS Git.Git
+git clone https://github.com/wshuv-o/gpupool.git
+cd gpupool
+npm install && npm run build
+node dist/agent/index.js setup leaf --key <setup-key> --root <url>
+```
+
+Identical behaviour — the binary is only that code with a Node runtime
+bundled.
+
+If this is going onto machines you do not own, sign it: your organisation's
+internal CA deployed via Group Policy costs nothing and removes both warnings
+on managed machines. A public certificate from a CA is needed for machines you
+do not control; an EV certificate clears SmartScreen immediately, while a
+standard one takes time to build reputation.
+
+
 ## On a GPU machine
 
 Ask whoever runs the broker for a join code, then:
