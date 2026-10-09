@@ -12,12 +12,24 @@ export interface Credentials {
   token: string;
   agentId: string;
   label: string;
+  /**
+   * Token for the local control API. Written here so an application on this
+   * machine can read it from a file it already has to know about, rather than
+   * being handed a secret out of band.
+   */
+  controlToken?: string;
 }
 
 export interface AgentManifest {
   environments: EnvironmentDecl[];
   maxConcurrency: number;
   healthIntervalMs: number;
+  /**
+   * Loopback port for the control API an application uses to publish a port it
+   * opened at runtime. 0 disables it, which is right for a machine whose
+   * environments never change.
+   */
+  controlPort: number;
 }
 
 /**
@@ -52,6 +64,7 @@ export function defaultLabel(): string {
 }
 
 interface ManifestFile {
+  controlPort?: number;
   environments?: Record<
     string,
     { port: number; health?: string; host?: string } | number
@@ -95,5 +108,6 @@ export function loadManifest(path: string): AgentManifest {
     environments,
     maxConcurrency: file.maxConcurrency ?? 4,
     healthIntervalMs: file.healthIntervalMs ?? 10_000,
+    controlPort: file.controlPort ?? 0,
   };
 }

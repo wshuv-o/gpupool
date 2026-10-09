@@ -37,7 +37,10 @@ export class AgentConn {
     readonly agentId: string,
     readonly label: string,
     readonly ws: WebSocket,
-    readonly environments: EnvironmentDecl[],
+    // Not readonly: an application can start a model on a port chosen at
+    // runtime, and the machine then serves something it did not know about
+    // when it connected.
+    public environments: EnvironmentDecl[],
     readonly maxConcurrency: number,
   ) {}
 

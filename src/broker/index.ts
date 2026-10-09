@@ -7,6 +7,7 @@ import { loadConfig, bearer } from './config.js';
 import { Enrolment, normalise } from './enrol.js';
 import { AuthLimiter, clientIp, safeEqual } from './security.js';
 import { DASHBOARD_HTML } from './ui/dashboard.js';
+import { DynamicKeys } from './dynamic.js';
 import { AgentConn, Registry } from './registry.js';
 import {
   PROTOCOL_VERSION,
@@ -19,6 +20,7 @@ import {
 const cfg = loadConfig();
 const registry = new Registry(cfg.sessionTtlMs);
 const enrolment = new Enrolment(cfg.tokenStorePath, cfg.inviteTtlMs);
+const dynamicKeys = new DynamicKeys();
 const limiter = new AuthLimiter(cfg.authMaxFailures, cfg.authWindowMs, cfg.authBlockMs);
 
 /** Refuse the request when this client has been guessing. */
@@ -135,7 +137,8 @@ function lookupAppKey(key: string): string | undefined {
     // matched, and whichever entry matched.
     if (safeEqual(candidate, key)) found = env;
   }
-  return found;
+  // Keys minted for environments that appeared at runtime.
+  return found ?? dynamicKeys.lookup(key);
 }
 
 async function handleProxy(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -487,6 +490,25 @@ function hasAgentToken(token: string): boolean {
   return found;
 }
 
+/**
+ * Tell a machine which app key addresses each of its environments.
+ *
+ * Environments named in broker.config.json already have a key the operator
+ * chose; anything else gets one minted here, so a port that appeared at
+ * runtime is addressable without editing config anywhere.
+ */
+function sendEnvKeys(agent: AgentConn): void {
+  const keys: Record<string, string> = {};
+  for (const env of agent.environments) {
+    let configured: string | undefined;
+    for (const [key, name] of cfg.appKeys) {
+      if (name === env.name) configured = key;
+    }
+    keys[env.name] = configured ?? dynamicKeys.mint(agent.agentId, env.name);
+  }
+  agent.send({ t: 'env_keys', keys });
+}
+
 function rejectUpgrade(socket: import('node:stream').Duplex, status: number, msg: string): void {
   const body = JSON.stringify({ error: { message: msg } });
   socket.write(
@@ -615,6 +637,7 @@ function attachAgent(ws: WebSocket): void {
       );
       registry.add(agent);
       registry.drain();
+      sendEnvKeys(agent);
       ws.send(
         JSON.stringify({ t: 'welcome', v: PROTOCOL_VERSION, heartbeatMs: cfg.heartbeatMs }),
       );
@@ -627,6 +650,18 @@ function attachAgent(ws: WebSocket): void {
     if (!agent) return;
 
     switch (frame.t) {
+      case 'envs': {
+        // The machine now serves something different — typically an
+        // application started a model on a port chosen moments ago.
+        const names = frame.environments.map((e) => e.name);
+        agent.environments = frame.environments;
+        dynamicKeys.retain(agent.agentId, names);
+        sendEnvKeys(agent);
+        // A new environment may be exactly what a queued request was waiting for.
+        registry.drain();
+        log(`~ ${agent.label} now serves [${names.join(', ')}]`);
+        break;
+      }
       case 'ping': {
         agent.lastSeen = Date.now();
         agent.states = frame.states;
@@ -718,6 +753,9 @@ function attachAgent(ws: WebSocket): void {
   const onGone = (reason: string) => () => {
     if (!agent) return;
     registry.remove(agent.agentId, reason);
+    // A runtime key addressed a port on this machine. With the machine gone
+    // the port is gone, so the key must not survive it.
+    dynamicKeys.dropAgent(agent.agentId);
     log(`- agent "${agent.label}" (${reason})`);
     agent = null;
   };

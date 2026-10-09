@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { request as httpRequest, type ClientRequest } from 'node:http';
 import { existsSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
 import { platform } from 'node:os';
 import { WebSocket } from 'ws';
@@ -16,6 +17,7 @@ import {
   type Credentials,
 } from './config.js';
 import { probeAll } from './health.js';
+import { startControlServer } from './control.js';
 import { detectEnvironments, renderManifest } from './detect.js';
 import { writeRootConfig, writeManifest, lanAddresses, rootDir } from './setup.js';
 import {
@@ -85,6 +87,9 @@ class Agent {
   /** Resolves once the first probe has run, so the broker stops guessing. */
   private probed: Promise<void>;
   private probedResolve!: () => void;
+  /** App keys the root issued, keyed by environment name. */
+  private envKeys: Record<string, string> = {};
+  private control: ReturnType<typeof startControlServer> | null = null;
 
   constructor(
     private creds: Credentials,
@@ -140,6 +145,9 @@ class Agent {
         case 'welcome':
           log(`registered as "${this.creds.label}" (broker protocol v${frame.v})`);
           this.startHeartbeat(frame.heartbeatMs);
+          break;
+        case 'env_keys':
+          this.envKeys = frame.keys;
           break;
         case 'req':
           this.forward(frame);
@@ -197,18 +205,21 @@ class Agent {
     ws.on('error', (err) => reconnect(err.message));
   }
 
+  /** One heartbeat, carrying the latest health snapshot. */
+  private beat(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(
+      encodeFrame({
+        t: 'ping',
+        activeJobs: this.inflight.size + this.sockets.size,
+        states: this.states,
+      }),
+    );
+  }
+
   private startHeartbeat(intervalMs: number): void {
     if (this.heartbeat) clearInterval(this.heartbeat);
-    const beat = () => {
-      if (this.ws?.readyState !== WebSocket.OPEN) return;
-      this.ws.send(
-        encodeFrame({
-          t: 'ping',
-          activeJobs: this.inflight.size + this.sockets.size,
-          states: this.states,
-        }),
-      );
-    };
+    const beat = () => this.beat();
     beat();
     this.heartbeat = setInterval(beat, intervalMs);
     // The first beat can land before the first probe finishes, leaving the
@@ -218,6 +229,59 @@ class Agent {
     void this.probed.then(() => {
       if (!this.stopping) beat();
     });
+  }
+
+  /**
+   * Publish a port that did not exist when this machine started.
+   *
+   * The environment list is replaced wholesale and re-sent, so the root's view
+   * cannot drift from this machine's. Health probing picks it up on the next
+   * cycle like any other environment.
+   */
+  async publishEnvironment(env: EnvironmentDecl): Promise<void> {
+    const rest = this.manifest.environments.filter((e) => e.name !== env.name);
+    this.manifest.environments = [...rest, env];
+    this.sendEnvironments();
+    // Probe immediately: the caller is about to hand the URL to someone, and a
+    // request arriving before the first probe would find no reported state.
+    this.states = await probeAll(this.manifest.environments);
+    this.beat();
+  }
+
+  async withdrawEnvironment(name: string): Promise<void> {
+    this.manifest.environments = this.manifest.environments.filter((e) => e.name !== name);
+    delete this.envKeys[name];
+    this.sendEnvironments();
+    this.states = await probeAll(this.manifest.environments);
+    this.beat();
+  }
+
+  private sendEnvironments(): void {
+    this.send({ t: 'envs', environments: this.manifest.environments });
+  }
+
+  environments(): EnvironmentDecl[] {
+    return this.manifest.environments;
+  }
+
+  keyFor(name: string): string | undefined {
+    return this.envKeys[name];
+  }
+
+  brokerUrl(): string {
+    return this.creds.broker;
+  }
+
+  /** Start the loopback API an application uses to publish ports. */
+  startControl(port: number, token: string): void {
+    this.control = startControlServer(port, token, {
+      list: () => this.environments(),
+      publish: (env) => this.publishEnvironment(env),
+      withdraw: (name) => this.withdrawEnvironment(name),
+      keyFor: (name) => this.keyFor(name),
+      brokerUrl: () => this.brokerUrl(),
+    });
+    log(`control API on 127.0.0.1:${port}`);
   }
 
   /** Pipe one tunnelled request into the local app and stream the reply back. */
@@ -630,6 +694,22 @@ function cmdServe(): void {
 
   const agent = new Agent(creds, manifest);
   agent.start();
+
+  // --control starts the API an application uses to publish a port it opened
+  // at runtime. Off unless asked for: a machine whose environments never
+  // change has no reason to listen for them.
+  const controlPort = Number(arg('control') ?? manifest.controlPort ?? 0);
+  if (controlPort > 0) {
+    let controlToken = creds.controlToken;
+    if (!controlToken) {
+      // Minted once and stored beside the credentials, so an application on
+      // this machine reads it from a file it already knows about.
+      controlToken = `ct_${randomBytes(16).toString('hex')}`;
+      saveCredentials({ ...creds, controlToken });
+    }
+    agent.startControl(controlPort, controlToken);
+    console.log(`  control:  http://127.0.0.1:${controlPort}  (token in ${credentialsPath()})`);
+  }
 
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.on(sig, () => {

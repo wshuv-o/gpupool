@@ -6,7 +6,7 @@
  * failover are both observable.
  */
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const procs = [];
@@ -124,7 +124,7 @@ try {
   start('wsapp', process.execPath, ['test/ws-app.mjs', '9998']);
   await waitFor(async () => (await fetch('http://127.0.0.1:8787/_health')).ok, 'broker');
 
-  start('agentA', process.execPath, ['dist/agent/index.js', 'serve', '--manifest', 'test/machineA.yaml'], {
+  start('agentA', process.execPath, ['dist/agent/index.js', 'serve', '--manifest', 'test/machineA.yaml', '--control', '9811'], {
     GPUPOOL_HOME: homeA,
   });
   start('agentB', process.execPath, ['dist/agent/index.js', 'serve', '--manifest', 'test/machineB.yaml'], {
@@ -359,6 +359,58 @@ try {
       !uiBody.includes(ADMIN_KEY) &&
       ui.headers.get('content-type').includes('text/html'),
   );
+
+  // 3h. ports published at runtime ----------------------------------------
+  // An application starts a model on a port chosen moments ago and needs it
+  // reachable through the pool without editing a manifest or restarting.
+  const ctrlToken = JSON.parse(
+    readFileSync(join(homeA, 'credentials.json'), 'utf8'),
+  ).controlToken;
+
+  const ctrl = (path, opts = {}) =>
+    fetch(`http://127.0.0.1:9811${path}`, {
+      ...opts,
+      headers: { ...(opts.headers || {}), authorization: `Bearer ${ctrlToken}` },
+    });
+
+  // Publishing a port must not be something the network can ask for.
+  const unauth = await fetch('http://127.0.0.1:9811/register', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ port: 9999 }),
+  });
+  record('the control API refuses callers without its token', unauth.status === 401);
+
+  // 9999 is the imagegen dummy, reused here as "a port that just appeared".
+  const published = await ctrl('/register', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ port: 9999, name: 'job-xyz', health: '/healthz' }),
+  }).then((r) => r.json());
+
+  await waitFor(async () => {
+    const s2 = await status();
+    return s2.agents.some((a) => a.environments.some((e) => e.name === 'job-xyz' && e.ready));
+  }, 'the published port to appear in the pool');
+
+  const reached = await fetch('http://127.0.0.1:8787/', {
+    headers: { authorization: `Bearer ${published.key}` },
+  }).then((r) => r.json());
+  record(
+    'a port published at runtime is reachable through the pool',
+    typeof published.key === 'string' && reached.servedBy === 'localhost:9999',
+  );
+
+  // The key must not outlive the thing it addressed.
+  await ctrl('/register/job-xyz', { method: 'DELETE' });
+  await waitFor(async () => {
+    const s2 = await status();
+    return !s2.agents.some((a) => a.environments.some((e) => e.name === 'job-xyz'));
+  }, 'the published port to be withdrawn');
+  const afterWithdraw = await fetch('http://127.0.0.1:8787/', {
+    headers: { authorization: `Bearer ${published.key}` },
+  });
+  record('withdrawing a port revokes its key', afterWithdraw.status === 401);
 
   // 4. streaming -------------------------------------------------------
   // Deterministic source, so this measures the tunnel and not model health.

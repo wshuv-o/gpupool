@@ -54,6 +54,20 @@ export interface HelloFrame {
   maxConcurrency: number;
 }
 
+/**
+ * The machine's environment list changed while it was connected.
+ *
+ * Declaring environments only in the opening handshake assumes a machine knows
+ * at startup everything it will ever serve. That is false the moment an
+ * application starts a model on a port chosen at runtime — the case this
+ * exists for. The agent sends the whole list rather than a delta, so the
+ * broker's view cannot drift out of step with the machine's.
+ */
+export interface EnvsFrame {
+  t: 'envs';
+  environments: EnvironmentDecl[];
+}
+
 export interface PingFrame {
   t: 'ping';
   activeJobs: number;
@@ -125,6 +139,7 @@ export interface WsErrFrame {
 
 export type AgentFrame =
   | HelloFrame
+  | EnvsFrame
   | PingFrame
   | ResHeadFrame
   | ResChunkFrame
@@ -142,6 +157,22 @@ export interface WelcomeFrame {
   v: number;
   /** Agent pings on this interval; broker evicts at 3x. */
   heartbeatMs: number;
+}
+
+/**
+ * App keys for the machine's environments, as the broker sees them.
+ *
+ * An environment created at runtime has no key in anyone's config, so nothing
+ * could address it. The broker mints one and tells the agent, which hands it
+ * to whichever application asked for the port in the first place.
+ *
+ * Sent after hello and after any envs frame, so the agent always holds the
+ * current set.
+ */
+export interface EnvKeysFrame {
+  t: 'env_keys';
+  /** environment name -> app key */
+  keys: Record<string, string>;
 }
 
 export interface ReqFrame {
@@ -179,6 +210,7 @@ export interface WsOpenFrame {
 
 export type BrokerFrame =
   | WelcomeFrame
+  | EnvKeysFrame
   | ReqFrame
   | CancelFrame
   | PongFrame
