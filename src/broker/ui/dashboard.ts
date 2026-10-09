@@ -239,13 +239,10 @@ function renderRoutes(routes) {
         '<button data-copy="' + escapeHtml(key) + '">Copy</button></div>' +
       '<div class="label" style="margin-top:14px">Use it</div>' +
       '<div class="joincmd mono">' + escapeHtml(
-        'curl ' + base + '/v1/chat/completions \
-' +
-        '  -H "Authorization: Bearer ' + key + '" \
-' +
-        '  -H "Content-Type: application/json" \
-' +
-        '  -d '{"model":"' + (r.models[0] || 'MODEL') + '","messages":[{"role":"user","content":"hi"}]}''
+        'curl ' + base + '/v1/chat/completions \\\n' +
+        '  -H "Authorization: Bearer ' + key + '" \\\n' +
+        '  -H "Content-Type: application/json" \\\n' +
+        "  -d '{\"model\":\"" + (r.models[0] || 'MODEL') + "\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'"
       ) + '</div>' +
       '<p class="sub">OpenAI-compatible: set base URL to <code>' + escapeHtml(base) +
         '/v1</code> and the API key above. Requests spread across the machines listed, ' +
