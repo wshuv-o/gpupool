@@ -412,6 +412,30 @@ try {
   });
   record('withdrawing a port revokes its key', afterWithdraw.status === 401);
 
+  // 3i. what the pool offers ----------------------------------------------
+  // The pool's point is that what it offers varies, so this is built from what
+  // is connected rather than from a fixed list — and every service names the
+  // key that reaches it, or a machine running something different is connected,
+  // healthy and unreachable.
+  const rt = await fetch('http://127.0.0.1:8787/_routes', {
+    headers: { authorization: `Bearer ${ADMIN_KEY}` },
+  }).then((r) => r.json());
+
+  const names = rt.routes.map((r) => r.environment).sort();
+  const everyRouteKeyed = rt.routes.every((r) => typeof r.key === 'string' && r.key.length > 0);
+  record(
+    'every service on offer is listed with a key that reaches it',
+    names.includes('chatapp') && names.includes('imagegen') && everyRouteKeyed,
+  );
+
+  // A key taken from /_routes must actually work, including for an environment
+  // nobody configured a key for.
+  const imagegen = rt.routes.find((r) => r.environment === 'imagegen');
+  const viaRouteKey = await fetch('http://127.0.0.1:8787/healthz', {
+    headers: { authorization: `Bearer ${imagegen.key}` },
+  });
+  record('a key taken from the route list works', viaRouteKey.status === 200);
+
   // 4. streaming -------------------------------------------------------
   // Deterministic source, so this measures the tunnel and not model health.
   record('SSE streams rather than buffers', await runScript('test/sse-test.mjs'));

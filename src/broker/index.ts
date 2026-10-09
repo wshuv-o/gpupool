@@ -378,6 +378,76 @@ async function handleEnrollment(req: IncomingMessage, res: ServerResponse): Prom
   json(res, 200, enrolment.enrollment(), req);
 }
 
+/**
+ * Everything a caller needs to use this pool, per service.
+ *
+ * The pool's whole point is that what it offers varies: machines come and go,
+ * and each contributes whatever it happens to run. So this is built from what
+ * is connected right now rather than from a fixed list, and names the key that
+ * reaches each service — configured keys and ones minted for environments that
+ * appeared at runtime alike, because a caller cannot tell the difference and
+ * should not have to.
+ */
+function handleRoutes(req: IncomingMessage, res: ServerResponse): void {
+  if (rateLimited(req, res)) return;
+  if (!cfg.adminKey || !safeEqual(bearer(req.headers.authorization), cfg.adminKey)) {
+    authFailed(req, 'admin key');
+    apiError(res, 401, 'Admin key required.', 'invalid_key', req);
+    return;
+  }
+  limiter.succeed(clientIp(req, cfg.trustedProxyHops));
+
+  // environment -> the machines serving it
+  const byEnv = new Map<string, AgentConn[]>();
+  for (const agent of registry.list()) {
+    for (const env of agent.environments) {
+      if (!agent.isReady(env.name)) continue;
+      const list = byEnv.get(env.name) ?? [];
+      list.push(agent);
+      byEnv.set(env.name, list);
+    }
+  }
+
+  const routes = [...byEnv.entries()].map(([environment, agents]) => {
+    let key: string | undefined;
+    for (const [candidate, name] of cfg.appKeys) {
+      if (name === environment) key = candidate;
+    }
+    if (!key) {
+      // Minted per machine, so any of them addresses this service.
+      for (const agent of agents) {
+        const mine = dynamicKeys.forAgent(agent.agentId)[environment];
+        if (mine) key = mine;
+      }
+    }
+
+    // Union of what the machines behind this route can serve.
+    const models = new Set<string>();
+    const loaded = new Set<string>();
+    for (const agent of agents) {
+      const st = agent.states.find((x) => x.name === environment);
+      for (const m of st?.models ?? []) models.add(m);
+      for (const m of st?.loaded ?? []) loaded.add(m);
+    }
+
+    return {
+      environment,
+      key: key ?? null,
+      machines: agents.map((a) => ({
+        label: a.label,
+        activeJobs: a.pending.size,
+        maxConcurrency: a.maxConcurrency,
+        freeVramMb: a.freeVramMb,
+        gpus: a.gpus.map((g) => g.name),
+      })),
+      models: [...models].sort(),
+      loaded: [...loaded].sort(),
+    };
+  });
+
+  json(res, 200, { routes }, req);
+}
+
 function handleStatus(req: IncomingMessage, res: ServerResponse): void {
   if (rateLimited(req, res)) return;
   // Fails CLOSED. This previously skipped the check entirely when no admin key
@@ -399,6 +469,8 @@ function handleStatus(req: IncomingMessage, res: ServerResponse): void {
       maxConcurrency: a.maxConcurrency,
       served: a.served,
       socketsOpened: a.socketsOpened,
+      gpus: a.gpus,
+      freeVramMb: a.freeVramMb,
       lastSeenMs: Date.now() - a.lastSeen,
       environments: a.environments.map((e) => ({
         name: e.name,
@@ -446,6 +518,7 @@ const server = createServer((req, res) => {
   }
   if (path === '/_invite') return handleInvite(req, res);
   if (path === '/_enrollment') return void handleEnrollment(req, res);
+  if (path === '/_routes') return handleRoutes(req, res);
   if (path === '/_join') return void handleJoin(req, res);
   if (path === '/_status') return handleStatus(req, res);
   if (path === '/_health') return json(res, 200, { ok: true }, req);
@@ -665,6 +738,7 @@ function attachAgent(ws: WebSocket): void {
       case 'ping': {
         agent.lastSeen = Date.now();
         agent.states = frame.states;
+        if (frame.gpus) agent.gpus = frame.gpus;
         ws.send(JSON.stringify({ t: 'pong' }));
         // A machine whose app just came back, or that just loaded the model a
         // waiter needs, is newly usable capacity.

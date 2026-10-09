@@ -18,6 +18,7 @@ import {
 } from './config.js';
 import { probeAll } from './health.js';
 import { startControlServer } from './control.js';
+import { probeGpus } from './gpu.js';
 import { detectEnvironments, renderManifest } from './detect.js';
 import { writeRootConfig, writeManifest, lanAddresses, rootDir } from './setup.js';
 import {
@@ -37,6 +38,7 @@ import {
   type BrokerFrame,
   type EnvironmentDecl,
   type EnvironmentState,
+  type GpuInfo,
   type ReqFrame,
   type WsOpenFrame,
 } from '../shared/protocol.js';
@@ -89,6 +91,7 @@ class Agent {
   private probedResolve!: () => void;
   /** App keys the root issued, keyed by environment name. */
   private envKeys: Record<string, string> = {};
+  private gpus: GpuInfo[] = [];
   private control: ReturnType<typeof startControlServer> | null = null;
 
   constructor(
@@ -110,6 +113,9 @@ class Agent {
   private async healthLoop(): Promise<void> {
     while (!this.stopping) {
       this.states = await probeAll(this.manifest.environments);
+      // Free VRAM moves as models load and unload, so it is sampled on the
+      // same cycle as health rather than once at startup.
+      this.gpus = await probeGpus();
       this.probedResolve();
       await new Promise((r) => setTimeout(r, this.manifest.healthIntervalMs));
     }
@@ -213,6 +219,7 @@ class Agent {
         t: 'ping',
         activeJobs: this.inflight.size + this.sockets.size,
         states: this.states,
+        gpus: this.gpus.length ? this.gpus : undefined,
       }),
     );
   }
@@ -528,19 +535,23 @@ async function cmdSetup(): Promise<void> {
  */
 async function cmdSetupRoot(): Promise<void> {
   const port = Number(arg('port') ?? 8787);
+
+  // Detection runs first: keys are minted per environment, so we have to know
+  // what this machine runs before we can mint them.
+  process.stdout.write('looking for local AI servers... ');
+  const found = await writeManifest(arg('manifest') ?? 'gpupool.yaml');
+
   const { config, created } = writeRootConfig({
     port,
-    environment: 'ollama',
+    environments: (found ?? []).map((e) => e.name),
     corsOrigin: arg('cors') ?? '*',
   });
 
   if (!created) {
+    console.log('');
     console.log(`already set up as root; reusing ${rootDir()}`);
     console.log('(delete that directory to start over — it would orphan joined machines)');
   }
-
-  process.stdout.write('looking for local AI servers... ');
-  const found = await writeManifest(arg('manifest') ?? 'gpupool.yaml');
   if (found) {
     console.log(`found ${found.length} — this machine will serve requests too.`);
   } else {
@@ -554,14 +565,21 @@ async function cmdSetupRoot(): Promise<void> {
   const addrs = lanAddresses();
   const lan = addrs[0] ?? '127.0.0.1';
 
+  const keyLines = Object.entries(config.appKeys)
+    .map(([env, k]) => `               ${env.padEnd(16)} ${k}`)
+    .join('\n');
+
   console.log(`
 root is configured.
 
   config     ${rootDir()}
   dashboard  http://${lan}:${port}/_ui
   admin key  ${config.adminKey}
-  app key    ${config.appKey}
   serves     ${found ? describe(found) : 'nothing locally — coordinates only'}
+
+  keys       one per service, so machines running different things each stay
+             reachable:
+${keyLines}
 
 Start it:
 

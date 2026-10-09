@@ -68,9 +68,22 @@ export interface EnvsFrame {
   environments: EnvironmentDecl[];
 }
 
+/** One GPU, as the machine reports it. */
+export interface GpuInfo {
+  name: string;
+  totalMb: number;
+  freeMb: number;
+}
+
 export interface PingFrame {
   t: 'ping';
   activeJobs: number;
+  /**
+   * GPUs on this machine and their free memory. Absent when the machine has
+   * none, or no tooling to ask — which routing reads as "cannot compare", not
+   * "has no capacity".
+   */
+  gpus?: GpuInfo[];
   /** Full liveness snapshot; the broker replaces its view with this. */
   states: EnvironmentState[];
 }

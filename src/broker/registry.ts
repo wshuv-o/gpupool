@@ -3,6 +3,7 @@ import type { ServerResponse } from 'node:http';
 import type {
   EnvironmentDecl,
   EnvironmentState,
+  GpuInfo,
 } from '../shared/protocol.js';
 import { encodeFrame } from '../shared/protocol.js';
 
@@ -26,6 +27,8 @@ export interface PendingRequest {
 export class AgentConn {
   readonly pending = new Map<string, PendingRequest>();
   states: EnvironmentState[] = [];
+  /** GPUs this machine reported, empty when it has none or cannot tell. */
+  gpus: GpuInfo[] = [];
   activeJobs = 0;
   lastSeen = Date.now();
   /** Cumulative requests dispatched to this machine since it connected. */
@@ -83,6 +86,11 @@ export class AgentConn {
 
   get hasCapacity(): boolean {
     return this.pending.size < this.maxConcurrency;
+  }
+
+  /** Free VRAM across this machine's GPUs; 0 when it reported none. */
+  get freeVramMb(): number {
+    return this.gpus.reduce((n, g) => n + g.freeMb, 0);
   }
 
   send(frame: Parameters<typeof encodeFrame>[0]): void {
@@ -338,10 +346,26 @@ function preferForModel(candidates: AgentConn[], env: string, model: string): Ag
   return candidates;
 }
 
+/**
+ * Pick between machines that can all serve the request.
+ *
+ * Fewest requests in flight first — a machine mid-generation on three prompts
+ * will answer a fourth more slowly than an idle one, whatever its hardware.
+ *
+ * Then most free VRAM. Equally busy machines are not equally able: the one
+ * with headroom can take the work without evicting a model it already holds,
+ * and evicting means the next request for that model pays a cold load. A
+ * machine that reports no GPUs scores 0 and loses the tiebreak, which is the
+ * right way round — if we cannot tell, prefer the machine we can.
+ */
 function leastBusy(candidates: AgentConn[]): AgentConn {
   let best = candidates[0];
   for (const c of candidates.slice(1)) {
-    if (c.pending.size < best.pending.size) best = c;
+    if (c.pending.size !== best.pending.size) {
+      if (c.pending.size < best.pending.size) best = c;
+      continue;
+    }
+    if (c.freeVramMb > best.freeVramMb) best = c;
   }
   return best;
 }

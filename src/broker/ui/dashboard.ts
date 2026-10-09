@@ -112,6 +112,12 @@ export const DASHBOARD_HTML = String.raw`<!doctype html>
     <div class="card"><div class="label">Served</div><div class="stat" id="nServed">-</div></div>
   </div>
 
+  <h2>Use this pool</h2>
+  <div id="routes"></div>
+  <div class="card empty" id="noRoutes" hidden>
+    Nothing is being served yet. Add a machine below.
+  </div>
+
   <h2>Machines</h2>
   <div class="card" style="padding:0">
     <table>
@@ -204,8 +210,56 @@ function renderRows(agents) {
   return out.join('');
 }
 
+function renderRoutes(routes) {
+  if (!routes.length) return '';
+  return routes.map(function (r) {
+    var base = location.origin;
+    var key = r.key || '(no key yet)';
+    var machines = r.machines.map(function (m) {
+      var vram = m.freeVramMb ? Math.round(m.freeVramMb / 1024) + ' GB free' : 'no GPU reported';
+      return escapeHtml(m.label) + ' (' + m.activeJobs + '/' + m.maxConcurrency + ', ' + vram + ')';
+    }).join(', ');
+    var models = r.models.length
+      ? r.models.map(function (m) {
+          var hot = r.loaded.indexOf(m) >= 0;
+          return '<span class="pill' + (hot ? ' loaded' : '') + '">' + escapeHtml(m) +
+            (hot ? ' &middot; in VRAM' : '') + '</span>';
+        }).join('')
+      : '<span class="muted">not reported</span>';
+
+    return '<div class="card" style="margin-bottom:14px">' +
+      '<div class="row"><strong style="font-size:15px">' + escapeHtml(r.environment) +
+        '</strong><span class="sub">' + machines + '</span></div>' +
+      '<div style="margin:10px 0">' + models + '</div>' +
+      '<div class="label" style="margin-top:14px">Base URL</div>' +
+      '<div class="row"><span class="mono" style="flex:1">' + escapeHtml(base) + '</span>' +
+        '<button data-copy="' + escapeHtml(base) + '">Copy</button></div>' +
+      '<div class="label" style="margin-top:10px">Key</div>' +
+      '<div class="row"><span class="mono" style="flex:1">' + escapeHtml(key) + '</span>' +
+        '<button data-copy="' + escapeHtml(key) + '">Copy</button></div>' +
+      '<div class="label" style="margin-top:14px">Use it</div>' +
+      '<div class="joincmd mono">' + escapeHtml(
+        'curl ' + base + '/v1/chat/completions \
+' +
+        '  -H "Authorization: Bearer ' + key + '" \
+' +
+        '  -H "Content-Type: application/json" \
+' +
+        '  -d '{"model":"' + (r.models[0] || 'MODEL') + '","messages":[{"role":"user","content":"hi"}]}''
+      ) + '</div>' +
+      '<p class="sub">OpenAI-compatible: set base URL to <code>' + escapeHtml(base) +
+        '/v1</code> and the API key above. Requests spread across the machines listed, ' +
+        'preferring one that already holds the model.</p>' +
+      '</div>';
+  }).join('');
+}
+
 function refresh() {
-  return api('/_status').then(function (st) {
+  return api('/_routes').then(function (rt) {
+    $('routes').innerHTML = renderRoutes(rt.routes);
+    $('noRoutes').hidden = rt.routes.length > 0;
+  }).catch(function () { /* routes are a convenience */ })
+  .then(function () { return api('/_status'); }).then(function (st) {
     $('broker').textContent = location.host;
     $('nMachines').textContent = st.agents.length;
     $('nActive').textContent = st.agents.reduce(function (n, a) { return n + a.activeJobs; }, 0);
@@ -246,6 +300,16 @@ $('loginForm').addEventListener('submit', function (e) {
 $('copyKey').onclick = function () {
   if (navigator.clipboard) navigator.clipboard.writeText($('ekey').textContent);
 };
+
+// One handler for every copy button, including the ones redrawn each refresh.
+document.addEventListener('click', function (e) {
+  var val = e.target && e.target.getAttribute && e.target.getAttribute('data-copy');
+  if (!val) return;
+  if (navigator.clipboard) navigator.clipboard.writeText(val);
+  var was = e.target.textContent;
+  e.target.textContent = 'Copied';
+  setTimeout(function () { e.target.textContent = was; }, 1200);
+});
 
 $('toggleOpen').onclick = function () {
   var closing = $('toggleOpen').textContent.indexOf('Close') === 0;

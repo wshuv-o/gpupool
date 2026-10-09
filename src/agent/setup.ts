@@ -18,8 +18,8 @@ import type { EnvironmentDecl } from '../shared/protocol.js';
 export interface RootConfig {
   port: number;
   adminKey: string;
-  appKey: string;
-  environment: string;
+  /** environment name -> app key. One per service, not one per pool. */
+  appKeys: Record<string, string>;
   dir: string;
 }
 
@@ -40,7 +40,16 @@ export function rootDir(): string {
  */
 export function writeRootConfig(opts: {
   port: number;
-  environment: string;
+  /**
+   * Environments this machine found locally. A key is minted per environment,
+   * never one for the pool: machines contribute different things — Ollama on
+   * one, vLLM on another — and a single key bound to one name leaves the rest
+   * connected, healthy and unreachable.
+   *
+   * Environments that appear later, on other machines or at runtime, get keys
+   * from the broker automatically; see /_routes.
+   */
+  environments: string[];
   corsOrigin: string;
 }): { config: RootConfig; created: boolean } {
   const dir = rootDir();
@@ -52,24 +61,28 @@ export function writeRootConfig(opts: {
       adminKey?: string;
       appKeys?: Record<string, string>;
     };
-    const [appKey, environment] = Object.entries(existing.appKeys ?? {})[0] ?? ['', ''];
+    const appKeys: Record<string, string> = {};
+    for (const [k, env] of Object.entries(existing.appKeys ?? {})) appKeys[env] = k;
     return {
       created: false,
       config: {
         port: existing.port ?? opts.port,
         adminKey: existing.adminKey ?? '',
-        appKey,
-        environment: environment || opts.environment,
+        appKeys,
         dir,
       },
     };
   }
 
+  const appKeys: Record<string, string> = {};
+  for (const env of opts.environments.length ? opts.environments : ['default']) {
+    appKeys[env] = key('pk');
+  }
+
   const config: RootConfig = {
     port: opts.port,
     adminKey: key('admin'),
-    appKey: key('pk'),
-    environment: opts.environment,
+    appKeys,
     dir,
   };
 
@@ -83,7 +96,10 @@ export function writeRootConfig(opts: {
         // it. A root exposed to the internet should sit behind a reverse proxy
         // and set host to 127.0.0.1 — see deploy/.
         adminKey: config.adminKey,
-        appKeys: { [config.appKey]: config.environment },
+        // Stored key -> environment, which is what the broker reads.
+        appKeys: Object.fromEntries(
+          Object.entries(config.appKeys).map(([env, k]) => [k, env]),
+        ),
         corsOrigin: opts.corsOrigin,
         tokenStorePath: join(dir, 'broker.tokens.json'),
       },
